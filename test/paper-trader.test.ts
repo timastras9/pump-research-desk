@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {paperTrade,summarizePaper,PAPER_RULES} from '../src/paper-trader';
+import {paperTrade,summarizePaper,PAPER_RULES,validRules,tunePaper,tapeSamples,type TuneToken} from '../src/paper-trader';
 
 // [seconds, price] pairs; a trade starts when the price first changes, filled at the next reading.
 const s=(pairs:[number,number][])=>pairs.map(([t,p])=>({time:t*1000,priceUsd:p}));
@@ -37,4 +37,23 @@ test('scorecard separates closed, open and skipped trades and splits by launch t
  ]);
  assert.equal(sum.overall.trades,2);assert.equal(sum.overall.wins,1);assert.equal(sum.open,1);assert.equal(sum.skipped['dead: no trade within 30s'],1);
  assert.equal(sum.byTag.feeRouted.with.trades,1);assert.equal(sum.byTag.feeRouted.without.trades,1);
+});
+
+test('rules can be tuned only within safe ranges; costs and size stay fixed',()=>{
+ const r=validRules({stopPct:15,checkAtMs:45000,costPerSide:0,sizeUsd:100,version:'tuned-x'});
+ assert.equal(r.stopPct,15);assert.equal(r.checkAtMs,45000);assert.equal(r.costPerSide,PAPER_RULES.costPerSide);assert.equal(r.sizeUsd,PAPER_RULES.sizeUsd);assert.equal(r.version,'tuned-x');
+ assert.throws(()=>validRules({stopPct:0}),/stopPct/);assert.throws(()=>validRules({trailPct:'30'}),/trailPct/);
+ assert.equal(paperTrade(s([[0,1],[5,1.01],[6,1.0],[10,0.84],[11,0.83]]),{rules:validRules({stopPct:15})}).exitReason,'stop -15%');
+});
+test('tuner picks rules on earlier studies and only promotes when they also win on the newest study',()=>{
+ // tape: [seconds, % from first read]; pumps that fade late reward a smaller early take-profit
+ const pumpFade:[number,number][]=[[0,0],[2,1],[3,0],[10,22],[11,24],[40,-40],[41,-45]];
+ const flat:[number,number][]=[[0,0],[2,1],[3,0],[50,1],[70,0],[71,-1]];
+ const make=(tape:[number,number][],test:boolean,skip:string|null=null):TuneToken=>({tape,skip,test});
+ const tokens:TuneToken[]=[...Array.from({length:12},()=>make(pumpFade,false)),...Array.from({length:6},()=>make(pumpFade,true)),make(flat,false),make(flat,true,'bulk spam launch')];
+ const out=tunePaper(tokens) as any;
+ assert.equal(out.status,'promote');assert.equal(out.suggested.rules.earlyTakePct,20);assert.ok(out.suggested.test.avgPct>out.current.test.avgPct);
+ assert.equal(out.suggested.rules.costPerSide,PAPER_RULES.costPerSide);
+ assert.equal((tunePaper(tokens.slice(0,3)) as any).status,'insufficient-data');
+ assert.deepEqual(tapeSamples([[2,50]]),[{time:2000,priceUsd:1.5}]);
 });

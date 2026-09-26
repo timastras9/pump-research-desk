@@ -109,3 +109,18 @@ export function paperHtml(paper,title='this study'){
 ${tags?`<div class="table-scroll"><table><thead><tr><th>Launch trait</th><th>With it: trades · avg · total</th><th>Without it</th></tr></thead><tbody>${tags}</tbody></table></div>`:''}`;
 }
 export function paperCell(p){if(!p)return '—';if(p.status==='skipped')return `<span class="muted">skip</span>`;const v=p.pnlPct;const s=v==null?'—':(v>0?'+':'')+num(v,1)+'%';return `<span class="${v>0?'c-winner':v<0?'c-tanked':''}">${p.status==='open'?'open ':''}${s}</span>`;}
+
+const ruleText=r=>r?`${esc(r.version)}: take +${esc(r.earlyTakePct)}% in ${esc((r.earlyWindowMs||0)/1000)}s · check +${esc(r.checkMinPct)}% at ${esc((r.checkAtMs||0)/1000)}s · stop −${esc(r.stopPct)}% · trail −${esc(r.trailPct)}% after +${esc(r.trailArmPct)}%`:'—';
+// One row per study: how each paper strategy did under the rules that study used.
+export function ledgerHtml(ledger,nextRules){
+ const money=v=>v==null?'—':(v>=0?'+$':'-$')+Math.abs(v).toFixed(2);
+ const cell=o=>o&&o.trades?`<span class="${o.totalUsd>0?'c-winner':o.totalUsd<0?'c-tanked':''}">${esc(o.trades)} · ${o.winRate==null?'—':esc(o.winRate)+'%'} · ${o.avgPct==null?'—':(o.avgPct>0?'+':'')+esc(o.avgPct)+'%'} · ${money(o.totalUsd)}</span>`:'—';
+ const rows=(ledger||[]).map(l=>`<tr><td>${esc(new Date(l.startedAt).toLocaleString())}</td><td>${esc(l.status)}</td><td>${esc(l.tokens??0)}</td><td>${esc(l.paperResult?.rules?.version??'not recorded')}</td><td>${cell(l.paperResult?.all)}</td><td>${cell(l.paperResult?.filtered)}</td></tr>`).join('');
+ const latest=(ledger||[]).find(l=>l.paperSuggestion&&!l.paperSuggestion.error);
+ const sug=(name,x)=>{if(!x)return '';if(x.status==='insufficient-data')return `<article class="paper-card"><h3>${esc(name)}</h3><p class="muted">${esc(x.reason)}</p></article>`;
+  const line=(lab,s)=>`<p>${lab}: train ${s.train.avgPct==null?'—':esc(s.train.avgPct)+'%'} (${esc(s.train.trades)}) · <strong>newest study ${s.test.avgPct==null?'—':esc(s.test.avgPct)+'%'} (${esc(s.test.trades)})</strong></p>`;
+  return `<article class="paper-card"><h3>${esc(name)} <span class="pill ${x.status==='promote'?'c-winner':''}">${x.status==='promote'?'better on unseen data':'keep current'}</span></h3>${line('Current rules',x.current)}${line('Suggested',x.suggested)}<p class="muted small">${ruleText(x.suggested.rules)}</p><p class="muted small">${esc(x.reason)}</p>${x.status==='promote'?`<button class="primary" data-apply='${esc(JSON.stringify(x.suggested.rules))}'>Apply to next study</button>`:''}</article>`;};
+ return `<p>Next study paper rules: <strong>${ruleText(nextRules)}</strong></p>
+<div class="table-scroll"><table><thead><tr><th>Study</th><th>Status</th><th>Tokens</th><th>Rules used</th><th>All tokens: trades · won · avg · total</th><th>Filtered: trades · won · avg · total</th></tr></thead><tbody>${rows||'<tr><td colspan="6">No studies yet.</td></tr>'}</tbody></table></div>
+${latest?`<h3>Rule tuner (after ${esc(new Date(latest.startedAt).toLocaleString())} study)</h3><p class="muted small">81 variants chosen on earlier studies only, then scored on the newest study. ${esc(latest.paperSuggestion.all?.warning??'')}</p><div class="paper-grid">${sug('All tradable tokens',latest.paperSuggestion.all)}${sug('Filtered: fee-routed or mayhem',latest.paperSuggestion.filtered)}</div>`:'<p class="muted">The rule tuner runs when a study finishes.</p>'}`;
+}
