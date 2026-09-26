@@ -116,6 +116,19 @@ export function paperHtml(paper,title='this study'){
 <div class="table-scroll"><table><thead><tr><th>Exit (all tokens, ${esc(title)})</th><th>Trades</th><th>Won</th><th>Avg</th><th>Total</th></tr></thead><tbody>${exits||'<tr><td colspan="5">No closed trades yet.</td></tr>'}</tbody></table></div>
 ${tags?`<div class="table-scroll"><table><thead><tr><th>Launch trait</th><th>With it: trades · avg · total</th><th>Without it</th></tr></thead><tbody>${tags}</tbody></table></div>`:''}`;
 }
+// Paper trade value at one moment (a frame or the latest price): net of costs, counting a partial sale already taken.
+export function paperAt(p,price,at,costPerSide=0.0325){
+ if(!p)return {state:'none',text:'Paper: not computed yet'};
+ if(p.status==='skipped')return {state:'skipped',text:`Paper: skipped${p.skipReason?' ('+p.skipReason+')':''}`};
+ if(p.entryAt==null||!p.entryPrice)return {state:'waiting',text:'Paper: waiting for entry'};
+ if(at<p.entryAt)return {state:'before',text:'Paper: before entry'};
+ if(p.exitAt!=null&&at>=p.exitAt&&p.status==='closed')return {state:'closed',pct:p.pnlPct,text:`Paper: closed ${p.pnlPct>0?'+':''}${num(p.pnlPct,1)}% (${p.exitReason||'exit'})`};
+ if(price==null||!(price>0))return {state:'open',text:'Paper: open, no price at this moment'};
+ const f=p.partialAt!=null&&at>=p.partialAt&&p.partialFraction?p.partialFraction:0;
+ const value=f*(p.partialPrice/p.entryPrice)+(1-f)*(price/p.entryPrice);
+ const pct=(value*(1-costPerSide)/(1+costPerSide)-1)*100;
+ return {state:'open',pct,text:`Paper: open ${pct>0?'+':''}${num(pct,1)}% net${f?` (${Math.round(f*100)}% already sold)`:''}`};
+}
 export function paperCell(p){if(!p)return '—';if(p.status==='skipped')return `<span class="muted">skip</span>`;const v=p.pnlPct;const s=v==null?'—':(v>0?'+':'')+num(v,1)+'%';return `<span class="${v>0?'c-winner':v<0?'c-tanked':''}">${p.status==='open'?'open ':''}${s}</span>`;}
 
 const ruleText=r=>r?`${esc(r.version)}: ${r.partialTakeFraction!=null&&r.partialTakeFraction<1?'sell '+esc(Math.round(r.partialTakeFraction*100))+'% at':'take'} +${esc(r.earlyTakePct)}% in ${esc((r.earlyWindowMs||0)/1000)}s · check +${esc(r.checkMinPct)}% at ${esc((r.checkAtMs||0)/1000)}s · stop −${esc(r.stopPct)}% · trail −${esc(r.trailPct)}% after +${esc(r.trailArmPct)}%`:'—';
