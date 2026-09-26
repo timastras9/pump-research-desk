@@ -60,6 +60,15 @@ async function upload() {
     if (Object.keys(wallet).length !== 1 || typeof wallet.CDP_WALLET_SECRET !== 'string' || !wallet.CDP_WALLET_SECRET.trim()) throw new Error('Invalid saved Wallet Secret.');
     values.CDP_WALLET_SECRET = wallet.CDP_WALLET_SECRET;
   } catch (error) { if (error.code !== 'ENOENT') throw new Error('Wallet Secret file is invalid; save it again.'); }
+  let downloaded;
+  try { downloaded = (await readFile(path.join(directory, 'cdp_wallet_secret.txt'), 'utf8')).trim(); }
+  catch (error) { if (error.code !== 'ENOENT') throw new Error('Could not read the downloaded Wallet Secret.'); }
+  if (downloaded !== undefined) {
+    if (!downloaded || downloaded.length > 12000) throw new Error('Downloaded Wallet Secret is empty or too large.');
+    if (values.CDP_WALLET_SECRET && values.CDP_WALLET_SECRET !== downloaded)
+      throw new Error('The form and downloaded file contain different Wallet Secrets. Resolve the mismatch before uploading.');
+    values.CDP_WALLET_SECRET = downloaded;
+  }
   console.log('Uploading Coinbase credentials to the pump-research-desk Worker configured in wrangler.jsonc.');
   const child = spawn(process.execPath, [path.join(root, 'node_modules/wrangler/bin/wrangler.js'), 'secret', 'bulk'], { cwd: root, stdio: ['pipe', 'inherit', 'inherit'] });
   child.stdin.on('error', () => {});
