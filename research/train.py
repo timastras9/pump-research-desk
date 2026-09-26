@@ -83,7 +83,7 @@ def platt(scores, y):
     opt = torch.optim.LBFGS([ab], max_iter=200)
     def closure():
         opt.zero_grad(); loss = nn.functional.binary_cross_entropy_with_logits(ab[0] * s + ab[1], t); loss.backward(); return loss
-    opt.step(closure); return [float(ab[0]), float(ab[1])]
+    opt.step(closure); return [float(ab[0].detach()), float(ab[1].detach())]
 
 def calibration_report(p, y, bins=10):
     edges = np.linspace(0, 1, bins + 1); idx = np.clip(np.digitize(p, edges) - 1, 0, bins - 1)
