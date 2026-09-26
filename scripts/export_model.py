@@ -9,7 +9,7 @@ Checks (the export fails if any is off):
   2. Writes test/fixtures/model_parity.json (sample launches + expected features, probabilities, trades) for src/model.ts.
 Training is not run here.
 """
-import argparse, hashlib, json, os, pickle, sqlite3, sys, time
+import argparse, datetime as dt, hashlib, json, os, pickle, sqlite3, sys, time
 import numpy as np, torch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from research import engine as E, train as T
@@ -81,7 +81,14 @@ def main():
     for ep in pick:
         d, b, tr = lm.trade(ep); e = d + E.LATENCY_S; end = min(E.WINDOW_S, e + E.HOLD_S)
         raw = db.execute('SELECT sec, wallet, side, sol FROM trades WHERE mint=? ORDER BY ts', (ep.mint,)).fetchall() if ep.trades is not None else None
-        fx.append({'mint': ep.mint, 'creator': ep.creator, 'tags': ep.tags, 'price': ep.price.tolist(), 'volume': ep.volume.tolist(), 'trades': raw,
+        # API-shaped raw data (as the Worker receives it) so src/launch-data.ts can be checked against load_episodes
+        desc, img, mayhem = db.execute('SELECT description, image_uri, mayhem FROM tokens WHERE mint=?', (ep.mint,)).fetchone()
+        iso = lambda ms: dt.datetime.fromtimestamp(ms / 1000, dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.') + f'{ms % 1000:03d}Z'
+        api = {'created': ep.created, 'coin': {'name': ep.name, 'creator': ep.creator, 'description': desc, 'image_uri': img, 'mayhem_state': bool(mayhem)},
+               'candles': [{'timestamp': ep.created + s * 1000, 'close': c, 'volume': v} for s, c, v in db.execute('SELECT sec, close, volume FROM candles WHERE mint=?', (ep.mint,))],
+               'trades': None if ep.trades is None else [{'timestamp': iso(ts), 'userAddress': w, 'type': side, 'amountSol': sol, 'tx': tx}
+                                                           for ts, w, side, sol, tx in db.execute('SELECT ts, wallet, side, sol, tx FROM trades WHERE mint=? ORDER BY ts', (ep.mint,))]}
+        fx.append({'mint': ep.mint, 'creator': ep.creator, 'tags': ep.tags, 'price': ep.price.tolist(), 'volume': ep.volume.tolist(), 'trades': raw, 'api': api,
                    'expect': {'decision_t': d, 'row_at_decision': [None if np.isnan(v) else float(v) for v in lm.row(ep, d)], 'buy_prob': lm.buy_prob(ep, d),
                               'entry_crash_prob': lm.entry_crash_prob(ep, d), 'crash_prob': {str(t): lm.crash_prob(ep, e, t) for t in range(e + 1, min(e + 40, end))},
                               'bought': b, 'fills': tr.fills if tr else None, 'net_pct': tr.net_return_pct() if tr else None}})
