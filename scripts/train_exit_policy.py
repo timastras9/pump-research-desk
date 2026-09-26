@@ -32,7 +32,11 @@ def load(db_path, min_traded):
         for i in range(1, 721):
             if np.isnan(p[i]): p[i] = p[i - 1]
         tags = [1.0 if re.search(r'fees? to @\w+', desc or '', re.I) else 0.0, float(mayhem or 0), 0.0 if (not img or re.search('ipfs|pinata', img)) else 1.0]
-        out.append(dict(mint=mint, name=name or '', created=created, p=p, v=v, tags=tags))
+        # Off-curve / corrupted prices: a bonding curve allows ~15x from launch before migration, so a >20x one-second jump
+        # or >30x launch price inside the first minute cannot be a tradeable move (Astra review: flag, don't silently clip).
+        jumps = p[1:] / p[:-1]
+        anomaly = bool(jumps.max() > 20 or p[:61].max() > 30 * p[0])
+        out.append(dict(mint=mint, name=name or '', created=created, p=p, v=v, tags=tags, anomaly=anomaly))
     return out
 
 def entry_of(t):
@@ -73,9 +77,12 @@ def target_exit(t):
     e = t['entry']; p = t['p']; f, end = fills_of(t)
     pct = lambda x: (x / p[e] - 1) * 100
     best = max(f, key=lambda s: (f[s], -s))
-    if net(p[e], f[best]) <= 0: return best, best, 'loser'
+    if net(p[e], f[best]) <= 0.5: return best, best, 'loser'   # a winner must clear +0.5% after costs (no break-even noise)
     peak_pct = pct(p[e + 1:end + 1].max())
-    floor = max(peak_pct - TARGET_POINTS, 1e-6)
+    # Earliest sell: decisions start the tick after the buy fills (e+1) and fill LATENCY_S later, so a peak at e+1..e+LATENCY_S is unreachable.
+    # Target must be net-positive after costs (Astra: winners whose target lost money after fees were label errors).
+    breakeven = ((1 + COST) / (1 - COST) - 1) * 100
+    floor = max(peak_pct - TARGET_POINTS, breakeven + 1e-6)
     if pct(f[best]) < floor: return best, best, 'winner-latency-gap'
     tgt = best
     while tgt - 1 > e and pct(f[tgt - 1]) >= floor: tgt -= 1

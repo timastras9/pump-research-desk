@@ -20,7 +20,10 @@ def main():
     review, every5 = [], []
     exact = {}   # exact target fill prices (the sheet rounds percentages)
     loser_info = {}
+    anomalies = []
     for t in tokens:
+        if t.get('anomaly'):   # off-curve / corrupted prices: audited separately, never labeled or trained on
+            anomalies.append([t['name'], t['mint'], time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(t['created'] / 1000)), round(float(t['p'].max() / t['p'][0]), 1)]); continue
         t['entry'] = tp.entry_of(t); e = t['entry']; p = t['p']
         launched = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(t['created'] / 1000))
         tags = ', '.join(n for n, on in zip(('fee-routed', 'mayhem', 'terminal'), t['tags']) if on) or 'website'
@@ -85,6 +88,10 @@ def main():
     w3.column_dimensions['A'].width = 24; w3.column_dimensions['B'].width = 130
     for c in w3['A']: c.font = bold
     wb.save(a.out)
+    import csv as _csv
+    with open(os.path.join(os.path.dirname(a.out) or '.', 'price_anomalies.csv'), 'w', newline='') as fh:
+        w = _csv.writer(fh); w.writerow(['token', 'mint', 'launched', 'max_price_vs_launch_x']); w.writerows(anomalies)
+    print(f'excluded {len(anomalies)} price-anomaly launches (see price_anomalies.csv)')
     import sqlite3
     db = sqlite3.connect(a.db)
     db.execute('DROP TABLE IF EXISTS exit_labels')

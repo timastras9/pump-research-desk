@@ -15,10 +15,11 @@ KPIS = ['secs_since_launch', 'price_change_since_launch_pct', 'active_secs', 'ac
 
 def build(a):
     tokens = tp.load(a.db, 20)
-    names = collections.Counter((t['name'] or '').strip().lower() for t in tokens)
+    seen_names = collections.Counter()   # copycat as of the decision: only launches created earlier (Astra: no future leak)
     lab = {m: (r, loss, why, pnl) for m, r, loss, why, pnl in sqlite3.connect(a.db).execute("SELECT mint, result, target_exit_pnl_pct, loser_reason, best_pnl_pct FROM exit_labels")}
     rows = []
     for t in tokens:
+        key = (t['name'] or '').strip().lower(); prior = seen_names[key]; seen_names[key] += 1
         if t['mint'] not in lab: continue
         e = tp.entry_of(t)
         if e is None: continue
@@ -27,8 +28,9 @@ def build(a):
         kp = [d, (p[d] / p[0] - 1) * 100, float((v[:d + 1] > 0).sum()), float((v[:d + 1] > 0).mean()), math.log1p(v[:d + 1].sum()),
               (v[max(0, d - 4):d + 1].sum() + 1) / (v[:max(1, d - 4)].sum() / max(1, d - 4) * 5 + 1), float(r.std() * 100) if len(r) > 1 else 0.0,
               (p[:d + 1].max() / p[0] - 1) * 100, (p[d] / p[:d + 1].max() - 1) * 100, int(first is not None and p[first] > p[0]), *[int(x) for x in t['tags']],
-              int(names[(t['name'] or '').strip().lower()] > 1), len(t['name'] or '')]
+              int(prior > 0), len(t['name'] or '')]
         res, loss, why, pnl = lab[t['mint']]
+        if t.get('anomaly'): continue
         rows.append([t['name'], t['mint'], 'loser' if res == 'loser' else 'winner', (why or '').split(':')[0], round(pnl, 1)] + [round(float(x), 3) for x in kp])
     with open(a.out, 'w', newline='') as fh: w = csv.writer(fh); w.writerow(['token', 'mint', 'result', 'loser_reason', 'best_pnl_pct'] + KPIS); w.writerows(rows)
     from sklearn.metrics import roc_auc_score
