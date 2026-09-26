@@ -1,4 +1,6 @@
-import { observe } from './observer';
+import { observe, scanExplore, type Frame } from './observer';
+import { timingSafeEqual } from 'node:crypto';
+import { costs } from './research-model';
 import { DurableObject } from 'cloudflare:workers';
 import { buy, close, equity, event, initialState, processTick, rejectionReasons, validateRules, type DeskState } from './engine';
 import { discover, mintPattern, quotes } from './market';
@@ -6,6 +8,7 @@ import { discover, mintPattern, quotes } from './market';
 export class ResearchDesk extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
+    this.researchSchema();
     this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS desk (id INTEGER PRIMARY KEY, data TEXT NOT NULL)');
     this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS login_attempts (ip TEXT PRIMARY KEY, start INTEGER NOT NULL, count INTEGER NOT NULL)');
   }
@@ -25,6 +28,43 @@ export class ResearchDesk extends DurableObject<Env> {
     sql.exec('INSERT INTO observer_budget(id,day,count,last) VALUES(1,?,?,?) ON CONFLICT(id) DO UPDATE SET day=excluded.day,count=excluded.count,last=excluded.last', day, row?.day === day ? row.count + 1 : 1, now);
     return true;
   }
+  researchSchema() {
+    this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS research_runs (id TEXT PRIMARY KEY, started INTEGER NOT NULL, data TEXT NOT NULL)');
+    this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS research_frames (run TEXT NOT NULL, idx INTEGER NOT NULL, data TEXT NOT NULL, PRIMARY KEY(run,idx))');
+    this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS research_scans (id TEXT PRIMARY KEY, data TEXT NOT NULL)');
+    this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS research_seen (mint TEXT PRIMARY KEY, first_seen INTEGER NOT NULL)');
+    this.ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS research_limits (kind TEXT PRIMARY KEY, day TEXT, count INTEGER, last INTEGER)');
+  }
+  researchLimit(kind:string) {
+    const now=Date.now(),day=new Date(now).toISOString().slice(0,10),sql=this.ctx.storage.sql;
+    const row=sql.exec<{day:string;count:number;last:number}>('SELECT day,count,last FROM research_limits WHERE kind=?',kind).toArray()[0];
+    if(row && (now-row.last<120000 || (row.day===day && row.count>=10))) return false;
+    sql.exec('INSERT INTO research_limits(kind,day,count,last) VALUES(?,?,1,?) ON CONFLICT(kind) DO UPDATE SET day=excluded.day,count=?,last=excluded.last',kind,day,now,row?.day===day?row.count+1:1);return true;
+  }
+  latestScan(): Awaited<ReturnType<typeof scanExplore>> | null {
+    const row=this.ctx.storage.sql.exec<{data:string}>("SELECT data FROM research_scans ORDER BY json_extract(data,'$.completedAt') DESC LIMIT 1").toArray()[0];return row?JSON.parse(row.data):null;
+  }
+  scanAvailability() {
+    const row=this.ctx.storage.sql.exec<{day:string;count:number;last:number}>('SELECT day,count,last FROM research_limits WHERE kind=?','scan').toArray()[0];
+    const now=Date.now(),day=new Date(now).toISOString().slice(0,10);
+    return {nextScanAt:row?Math.max(row.last+120000,row.day===day&&row.count>=10?Date.parse(day+'T00:00:00Z')+86400000:0):0,remaining:Math.max(0,10-(row?.day===day?row.count:0))};
+  }
+  saveScan(scan:Awaited<ReturnType<typeof scanExplore>>) {
+    const sql=this.ctx.storage.sql;
+    for(const c of scan.candidates){sql.exec('INSERT OR IGNORE INTO research_seen(mint,first_seen) VALUES(?,?)',c.mint,c.detectedAt);c.firstSeenAt=sql.exec<{first_seen:number}>('SELECT first_seen FROM research_seen WHERE mint=?',c.mint).one().first_seen;}
+    sql.exec('INSERT INTO research_scans(id,data) VALUES(?,?)',scan.id,JSON.stringify(scan));return scan;
+  }
+  getScan(id:string): Awaited<ReturnType<typeof scanExplore>> | null {const row=this.ctx.storage.sql.exec<{data:string}>('SELECT data FROM research_scans WHERE id=?',id).toArray()[0];return row?JSON.parse(row.data):null;}
+  beginResearch(mint:string,scanId:string|null,seconds:number,assumptions:ReturnType<typeof costs>) {
+    const sql=this.ctx.storage.sql;
+    if(sql.exec<{n:number}>('SELECT COUNT(*) AS n FROM research_runs').one().n>=100) throw Error('Research archive limit reached (100 runs). Export before expanding storage.');
+    const id=crypto.randomUUID();const startedAt=Date.now();
+    sql.exec('INSERT INTO research_runs(id,started,data) VALUES(?,?,?)',id,startedAt,JSON.stringify({id,mint,scanId,seconds,assumptions,startedAt,status:'recording',liveTrading:false}));return id;
+  }
+  saveResearchFrame(id:string,frame:Frame) {if(frame.image.length>500000)throw Error('Screenshot exceeded storage bound.');this.ctx.storage.sql.exec('INSERT OR REPLACE INTO research_frames(run,idx,data) VALUES(?,?,?)',id,frame.index,JSON.stringify(frame));}
+  finishResearch(id:string,report:Record<string,unknown>) {const sql=this.ctx.storage.sql;const before=sql.exec<{data:string}>('SELECT data FROM research_runs WHERE id=?',id).one();sql.exec('UPDATE research_runs SET data=? WHERE id=?',JSON.stringify({...JSON.parse(before.data),...report,status:'finished'}),id);}
+  researchList() {return this.ctx.storage.sql.exec<{data:string}>('SELECT data FROM research_runs ORDER BY started DESC LIMIT 100').toArray().map(r=>{const d=JSON.parse(r.data);return {id:d.id,mint:d.mint,startedAt:d.startedAt,status:d.status,frameCount:d.frameCount??null,failure:d.failure??null};});}
+  researchReport(id:string): string | null {const sql=this.ctx.storage.sql,row=sql.exec<{data:string}>('SELECT data FROM research_runs WHERE id=?',id).toArray()[0];if(!row)return null;return JSON.stringify({...JSON.parse(row.data),frames:sql.exec<{data:string}>('SELECT data FROM research_frames WHERE run=? ORDER BY idx',id).toArray().map(r=>JSON.parse(r.data))});}
   loginAllowed(ip: string): boolean {
     const now = Date.now();
     this.ctx.storage.sql.exec('DELETE FROM login_attempts WHERE start < ?', now - 60000);
@@ -128,7 +168,7 @@ const json = (data: unknown, status = 200, headers: Record<string, string> = {})
 async function equal(a: string, b: string): Promise<boolean> {
   const enc = new TextEncoder();
   const [x, y] = await Promise.all([crypto.subtle.digest('SHA-256', enc.encode(a)), crypto.subtle.digest('SHA-256', enc.encode(b))]);
-  return crypto.subtle.timingSafeEqual(x, y);
+  return timingSafeEqual(new Uint8Array(x), new Uint8Array(y));
 }
 async function sessionToken(secret: string, expires: number): Promise<string> {
   const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
@@ -181,12 +221,34 @@ async function route(request: Request, env: Env): Promise<Response> {
       catch { return json({ error: 'Token search is unavailable. Try again shortly or paste a mint address.' }, 502); }
     }
     if (path === '/api/refresh' && request.method === 'POST') { const result = await desk.refresh(); return json(result, result.ok ? 200 : 502); }
+    if(path === '/api/research/scan' && request.method === 'GET') return json({scan:await desk.latestScan(),...await desk.scanAvailability()});
+    if (path === '/api/research/scan' && request.method === 'POST') {
+      if(!await desk.researchLimit('scan')) {
+        const previous=await desk.latestScan();const availability=await desk.scanAvailability();
+        return previous?json({...previous,...availability,cached:true}):json({error:'A scan is in progress or the scan allowance is exhausted. Try after '+new Date(availability.nextScanAt).toLocaleTimeString('en-US',{timeZone:'UTC'})+' UTC.',...availability},429);
+      }
+      try{return json({...await desk.saveScan(await scanExplore(env)),...await desk.scanAvailability(),cached:false});}catch{return json({error:'Explore scan unavailable. Browser access or account limits may be blocking it.'},502);}
+    }
+    if (path === '/api/research/runs' && request.method === 'GET') return json({runs:await desk.researchList()});
+    if (['/api/research/report','/api/research/export'].includes(path) && request.method === 'GET') {
+      const report=await desk.researchReport(url.searchParams.get('id')??'');return report?json(JSON.parse(report),200,path.endsWith('/export')?{'Content-Disposition':'attachment; filename="research-evidence.json"'}:{}):json({error:'Recording not found.'},404);
+    }
     if (path === '/api/observe' && request.method === 'POST') {
       const input = await body(request);
       if (typeof input.mint !== 'string' || !mintPattern.test(input.mint)) return json({error:'Enter an exact Solana token mint.'},400);
-      if (!await desk.observerAllowed()) return json({error:'Pilot budget: wait two minutes between runs; maximum ten runs per UTC day.'},429);
-      try { return json(await observe(env,input.mint)); }
-      catch { return json({error:'Browser pilot could not complete. Browser access, page availability or account limits may be blocking it. No trades were placed.'},502); }
+      const seconds=input.seconds??30;if(![10,30,60].includes(Number(seconds)))return json({error:'Choose 10, 30 or 60 seconds.'},400);
+      const assumptions=costs(input.assumptions??{});const scanId=typeof input.scanId==='string'?input.scanId:null;
+      const discovery=scanId?await desk.getScan(scanId):null;
+      if(scanId && (!discovery || Date.now()-discovery.completedAt>300000 || !discovery.candidates.some(c=>c.mint===input.mint)))return json({error:'Candidate scan expired or mint was not observed. Scan again.'},400);
+      if (!await desk.observerAllowed()) return json({error:'Recording budget: wait two minutes between runs; maximum ten runs per UTC day.'},429);
+      const id=await desk.beginResearch(input.mint,scanId,Number(seconds),assumptions);
+      try {
+        const report=await observe(env,input.mint,id,Number(seconds),assumptions,frame=>desk.saveResearchFrame(id,frame));
+        await desk.finishResearch(id,{...report,discovery});return json(JSON.parse((await desk.researchReport(id))!));
+      } catch {
+        await desk.finishResearch(id,{failure:'Research run interrupted. Saved frames remain available.',completedAt:Date.now()});
+        return json({error:'Recording interrupted. Partial evidence is in Saved recordings.',id},502);
+      }
     }
     if (path === '/api/review' && request.method === 'POST') { const result = await desk.review(true); return json(result, result.ok ? 200 : 502); }
     const action = path.slice('/api/'.length);
