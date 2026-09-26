@@ -90,5 +90,22 @@ export function tokenTableHtml(rows,now=Date.now()){
  const sorted=[...rows].sort((a,b)=>live(b)-live(a)||(live(a)?(a.endsAt??0)-(b.endsAt??0):(nowPct(b)??-1e9)-(nowPct(a)??-1e9)));
  const pct=v=>v==null?'—':(v>0?'+':'')+num(v,1)+'%';
  const cls=v=>v==null?'':v>7?'c-winner':v<=-50?'c-tanked':'';
- return `<table><thead><tr><th>Token</th><th>Status</th><th>Now</th><th>Peak</th><th>Time left</th><th>Frames</th><th>Launch</th><th>Comparison</th><th>Review</th></tr></thead><tbody>${sorted.map(t=>{const n=nowPct(t),p=peakPct(t);return `<tr><td>${esc(t.name||t.mint?.slice(0,10))}</td><td>${esc(t.status)}</td><td class="${cls(n)}">${pct(n)}</td><td>${pct(p)}</td><td>${live(t)?age(Math.max(0,(t.endsAt??now)-now)):'done'}</td><td>${esc(t.frameCount??0)}</td><td>${esc(t.launch?.launchTool??'—')}${t.launch?.mayhem?' · mayhem':''}</td><td>${t.excluded?'Excluded':'Included'}</td><td><button data-token="${esc(t.id)}">Open</button></td></tr>`;}).join('')}</tbody></table>`;
+ return `<table><thead><tr><th>Token</th><th>Status</th><th>Now</th><th>Peak</th><th>Time left</th><th>Frames</th><th>Launch</th><th>Paper (all)</th><th>Paper (filtered)</th><th>Comparison</th><th>Review</th></tr></thead><tbody>${sorted.map(t=>{const n=nowPct(t),p=peakPct(t);return `<tr><td>${esc(t.name||t.mint?.slice(0,10))}</td><td>${esc(t.status)}</td><td class="${cls(n)}">${pct(n)}</td><td>${pct(p)}</td><td>${live(t)?age(Math.max(0,(t.endsAt??now)-now)):'done'}</td><td>${esc(t.frameCount??0)}</td><td>${esc(t.launch?.launchTool??'—')}${t.launch?.mayhem?' · mayhem':''}</td><td>${paperCell(t.paper)}</td><td>${paperCell(t.paperFiltered)}</td><td>${t.excluded?'Excluded':'Included'}</td><td><button data-token="${esc(t.id)}">Open</button></td></tr>`;}).join('')}</tbody></table>`;
 }
+
+// Paper trading scorecard: two strategies side by side, exits and launch traits that drive the result.
+export function paperHtml(paper,title='this study'){
+ if(!paper?.all)return '<p class="muted">No paper trades yet.</p>';
+ const money=v=>v==null?'—':(v>=0?'+$':'-$')+Math.abs(v).toFixed(2);
+ const pct=v=>v==null?'—':(v>0?'+':'')+num(v,1)+'%';
+ const cls=v=>v==null?'':v>0?'c-winner':v<0?'c-tanked':'';
+ const col=(name,s)=>{const o=s.overall;return `<article class="paper-card"><h3>${esc(name)}</h3><p class="big ${cls(o.totalUsd)}">${money(o.totalUsd)}</p><p>${esc(o.trades)} closed trades · ${o.winRate==null?'—':esc(o.winRate)+'% won'} · avg ${pct(o.avgPct)} · median ${pct(o.medianPct)}${s.open?` · ${esc(s.open)} open`:''}</p><p class="muted">Skipped: ${Object.entries(s.skipped||{}).map(([k,v])=>esc(k)+' '+esc(v)).join(' · ')||'none'}</p></article>`;};
+ const exits=Object.entries(paper.all.byExit||{}).sort((a,b)=>b[1].totalUsd-a[1].totalUsd).map(([k,v])=>`<tr><td>${esc(k)}</td><td>${esc(v.trades)}</td><td>${v.winRate==null?'—':esc(v.winRate)+'%'}</td><td class="${cls(v.avgPct)}">${pct(v.avgPct)}</td><td class="${cls(v.totalUsd)}">${money(v.totalUsd)}</td></tr>`).join('');
+ const tags=Object.entries(paper.all.byTag||{}).map(([k,v])=>`<tr><td>${esc(k)}</td><td>${esc(v.with.trades)} · ${pct(v.with.avgPct)} · ${money(v.with.totalUsd)}</td><td>${esc(v.without.trades)} · ${pct(v.without.avgPct)} · ${money(v.without.totalUsd)}</td></tr>`).join('');
+ const r=paper.all.rules||{};
+ return `<div class="paper-grid">${col('All tradable tokens',paper.all)}${col('Filtered: fee-routed or mayhem',paper.filtered)}</div>
+<p class="muted small">Rules ${esc(r.version)}: $${esc(r.sizeUsd)} per trade · skip no trade within ${esc((r.deadAfterMs||0)/1000)}s, bulk spam, or already +${esc(r.noChaseAbovePct)}% · sell +${esc(r.earlyTakePct)}% in first ${esc((r.earlyWindowMs||0)/1000)}s · sell if never +${esc(r.checkMinPct)}% by ${esc((r.checkAtMs||0)/1000)}s · stop −${esc(r.stopPct)}% · trail −${esc(r.trailPct)}% after +${esc(r.trailArmPct)}% · out at ${esc((r.maxHoldMs||0)/60000)} min · ${esc((r.costPerSide||0)*100)}% cost per side. ${esc(paper.all.warning||'')}</p>
+<div class="table-scroll"><table><thead><tr><th>Exit (all tokens, ${esc(title)})</th><th>Trades</th><th>Won</th><th>Avg</th><th>Total</th></tr></thead><tbody>${exits||'<tr><td colspan="5">No closed trades yet.</td></tr>'}</tbody></table></div>
+${tags?`<div class="table-scroll"><table><thead><tr><th>Launch trait</th><th>With it: trades · avg · total</th><th>Without it</th></tr></thead><tbody>${tags}</tbody></table></div>`:''}`;
+}
+export function paperCell(p){if(!p)return '—';if(p.status==='skipped')return `<span class="muted">skip</span>`;const v=p.pnlPct;const s=v==null?'—':(v>0?'+':'')+num(v,1)+'%';return `<span class="${v>0?'c-winner':v<0?'c-tanked':''}">${p.status==='open'?'open ':''}${s}</span>`;}

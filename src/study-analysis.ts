@@ -49,12 +49,12 @@ type ChatAssoc={matchedComments:number;terms:{term:string;count:number;meanObser
 // Compact chat for the model: counts, keyword sentiment and top repeated terms; missing chat stays 'not-observed'.
 export function compactChat(windows?:ChatWindow[],assoc?:ChatAssoc){if(!windows?.length)return {availability:'not-observed'};return {windows:windows.map(w=>({s:w.seconds,availability:w.availability,complete:w.complete,comments:w.uniqueComments,pos:w.sentiment.positiveComments,neg:w.sentiment.negativeComments,terms:(w.repeatedTerms??[]).slice(0,5).map(t=>t.term+':'+t.commentCount)})),wordThen30s:assoc?{matchedComments:assoc.matchedComments,terms:assoc.terms.slice(0,6).map(t=>({term:t.term,n:t.count,meanPct:compactNumber(t.meanObservedChangePct),enough:t.minimumCountMet}))}:null};}
 // Launch facts fixed at creation (pump.fun coin record). Never includes ATH or later market data.
-export type LaunchInfo={twitter:boolean;website:boolean;telegram:boolean;mayhem:boolean;launchTool:string;pumpSuffix:boolean;creator:string|null};
+export type LaunchInfo={twitter:boolean;website:boolean;telegram:boolean;mayhem:boolean;launchTool:string;pumpSuffix:boolean;creator:string|null;feeRouted?:boolean;bulkSpam?:boolean};
 export function launchInfoFromCoin(d:Record<string,unknown>,mint:string):LaunchInfo {
   const host=(()=>{try{return new URL(String(d.image_uri??'')).hostname;}catch{return '';}})();
   const tool=host.includes('uxento')?'uxento':host.includes('axiom')?'axiom':host.includes('rapidlaunch')?'rapidlaunch':host.includes('launchblitz')?'launchblitz':host.includes('usepaid')?'usepaid':host.includes('twimg')?'x-image':host.includes('ipfs.io')||host.includes('pinata')?'pump-ipfs':host?'other':'unknown';
   const s=(v:unknown)=>typeof v==='string'&&v.trim().length>0;
-  return {twitter:s(d.twitter),website:s(d.website),telegram:s(d.telegram),mayhem:d.mayhem_state!=null&&d.mayhem_state!==''||d.mayhem===true,launchTool:tool,pumpSuffix:mint.endsWith('pump'),creator:typeof d.creator==='string'?d.creator:null};
+  return {twitter:s(d.twitter),website:s(d.website),telegram:s(d.telegram),mayhem:d.mayhem_state!=null&&d.mayhem_state!==''||d.mayhem===true,launchTool:tool,pumpSuffix:mint.endsWith('pump'),creator:typeof d.creator==='string'?d.creator:null,feeRouted:/fees? to @\w+/i.test(String(d.description??'')),bulkSpam:/discord\.gg\/uxento/i.test(String(d.description??''))};
 }
 // Terminal launches (Uxento, Axiom, UsePaid, ...) versus the pump.fun website's own IPFS upload.
 export const isTerminalLaunch=(l:LaunchInfo|null|undefined)=>!!l&&l.launchTool!=='pump-ipfs'&&l.launchTool!=='unknown';

@@ -8,7 +8,9 @@ const row=(id:string,end:number,l:LaunchInfo|null,cap=3500):AggregateRow=>({id,m
 
 test('launch facts come from creation fields only and classify terminals',()=>{
  const l=launchInfoFromCoin({image_uri:'https://edge.uxento.io/image/x',twitter:'',website:'https://x.com/a/status/1',mayhem_state:'completed',creator:'C',ath_market_cap:28983},'Mintpump');
- assert.deepEqual(l,{twitter:false,website:true,telegram:false,mayhem:true,launchTool:'uxento',pumpSuffix:true,creator:'C'});
+ assert.deepEqual(l,{twitter:false,website:true,telegram:false,mayhem:true,launchTool:'uxento',pumpSuffix:true,creator:'C',feeRouted:false,bulkSpam:false});
+ assert.equal(launchInfoFromCoin({description:'Fees to @pumpfun via UsePaid'},'M').feeRouted,true);
+ assert.equal(launchInfoFromCoin({description:'Launched on discord.gg/uxento'},'M').bulkSpam,true);
  assert.equal(isTerminalLaunch(l),true);
  assert.equal(isTerminalLaunch(launchInfoFromCoin({image_uri:'https://ipfs.io/ipfs/abc'},'M')),false);
  assert.equal(launchInfoFromCoin({image_uri:'https://usepaid.app/api/launch/image/1'},'M').launchTool,'usepaid');
