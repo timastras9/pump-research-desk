@@ -1,6 +1,6 @@
 # Momentum Lab
 
-Private, single-owner paper-trading research desk for Pump markets, hosted on Cloudflare Workers. **No Coinbase connection, wallet signing, transaction submission, or real-money trading is implemented.**
+Private, single-owner paper-trading research desk for Pump markets, hosted on Cloudflare Workers. A local setup command connects a separate CDP Solana wallet and verifies message signing. **The deployed dashboard has no wallet execution, transaction submission, or real-money trading.**
 
 ## Use it
 
@@ -79,5 +79,9 @@ Run `npm run credentials:upload` when ready to upload the saved values to the Wo
 The selected approach is a separate CDP API-key-controlled Solana wallet, funded manually by the owner, rather than linking the consumer Coinbase balance. The existing Ed25519 developer API key is suitable for CDP API authentication. A separate Wallet Secret is required for wallet operations. The local credential form has a dedicated Wallet Secret section, which writes `.secrets/coinbase-wallet.json` with owner-only permissions without changing the API key pair. `npm run credentials:upload` includes `CDP_WALLET_SECRET` if that file exists. No wallet creation, funding, signing, or live execution is enabled just by saving/uploading these values. Create and verify the Solana wallet and test its signing flow before presenting an address for funding. The user's stated future live trial budget is $11 total, after testing.
 
 Reference: https://docs.cdp.coinbase.com/wallets/quickstart/api-key-auth
+
+Run `npm run wallet:check` to create or retrieve the named `pump-research-desk` Solana account, sign a unique connectivity-only message, independently verify its Ed25519 signature, and read the SOL balance using public mainnet RPC. It saves address and verification metadata in ignored `.secrets/solana-wallet.json`. Repeating the command reuses the same named account. It never signs a transaction or sends funds. An unavailable balance is `null`, not zero. Raw SDK errors and credentials are not printed.
+
+Remaining before live use: deploy wallet access in the authenticated backend; connect a reliable Solana RPC and live trade feed; implement official Pump/PumpSwap transaction building, simulation, confirmation and sell retries; test slippage, fees and failure handling; and validate the strategy with the intended $11 trial budget. The existing $1,000 paper account is not yet calibrated to that budget. Funding comes after these tests. No strategy can guarantee profitable trades or immediate exits.
 
 The uploader also accepts the downloaded `.secrets/cdp_wallet_secret.txt` directly and uploads its value as `CDP_WALLET_SECRET`. If both wallet files exist, their values must match; otherwise upload stops. Secret values are sent through standard input and never committed to Git or included in public assets.

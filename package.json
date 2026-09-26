@@ -11,12 +11,17 @@
     "types": "wrangler types",
     "build": "wrangler deploy --dry-run",
     "credentials": "node scripts/credentials.mjs",
-    "credentials:upload": "node scripts/credentials.mjs --upload"
+    "credentials:upload": "node scripts/credentials.mjs --upload",
+    "wallet:check": "node scripts/wallet-check.mjs"
   },
   "devDependencies": {
-    "wrangler": "4.141.0",
-    "typescript": "~5.9.3",
+    "@types/node": "^22.0.0",
     "tsx": "^4.20.0",
-    "@types/node": "^22.0.0"
+    "typescript": "~5.9.3",
+    "wrangler": "4.141.0"
+  },
+  "dependencies": {
+    "@coinbase/cdp-sdk": "^1.57.0",
+    "bs58": "^6.0.0"
   }
 }
