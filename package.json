@@ -22,6 +22,7 @@
     "wrangler": "4.141.0"
   },
   "dependencies": {
+    "@cloudflare/puppeteer": "^1.4.0",
     "@coinbase/cdp-sdk": "^1.57.0",
     "@solana-program/system": "^0.10.0",
     "@solana/kit": "^5.5.1",

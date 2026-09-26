@@ -1,3 +1,4 @@
+import { observe } from './observer';
 import { DurableObject } from 'cloudflare:workers';
 import { buy, close, equity, event, initialState, processTick, rejectionReasons, validateRules, type DeskState } from './engine';
 import { discover, mintPattern, quotes } from './market';
@@ -14,6 +15,15 @@ export class ResearchDesk extends DurableObject<Env> {
   }
   private save(s: DeskState): void {
     this.ctx.storage.sql.exec('INSERT INTO desk (id,data) VALUES (1,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data', JSON.stringify(s));
+  }
+  observerAllowed(): boolean {
+    const sql = this.ctx.storage.sql; const now = Date.now();
+    sql.exec('CREATE TABLE IF NOT EXISTS observer_budget (id INTEGER PRIMARY KEY, day TEXT, count INTEGER, last INTEGER)');
+    const day = new Date(now).toISOString().slice(0, 10);
+    const row = sql.exec<{day:string;count:number;last:number}>('SELECT day,count,last FROM observer_budget WHERE id=1').toArray()[0];
+    if (row && (now - row.last < 120000 || (row.day === day && row.count >= 10))) return false;
+    sql.exec('INSERT INTO observer_budget(id,day,count,last) VALUES(1,?,?,?) ON CONFLICT(id) DO UPDATE SET day=excluded.day,count=excluded.count,last=excluded.last', day, row?.day === day ? row.count + 1 : 1, now);
+    return true;
   }
   loginAllowed(ip: string): boolean {
     const now = Date.now();
@@ -171,6 +181,13 @@ async function route(request: Request, env: Env): Promise<Response> {
       catch { return json({ error: 'Token search is unavailable. Try again shortly or paste a mint address.' }, 502); }
     }
     if (path === '/api/refresh' && request.method === 'POST') { const result = await desk.refresh(); return json(result, result.ok ? 200 : 502); }
+    if (path === '/api/observe' && request.method === 'POST') {
+      const input = await body(request);
+      if (typeof input.mint !== 'string' || !mintPattern.test(input.mint)) return json({error:'Enter an exact Solana token mint.'},400);
+      if (!await desk.observerAllowed()) return json({error:'Pilot budget: wait two minutes between runs; maximum ten runs per UTC day.'},429);
+      try { return json(await observe(env,input.mint)); }
+      catch { return json({error:'Browser pilot could not complete. Browser access, page availability or account limits may be blocking it. No trades were placed.'},502); }
+    }
     if (path === '/api/review' && request.method === 'POST') { const result = await desk.review(true); return json(result, result.ok ? 200 : 502); }
     const action = path.slice('/api/'.length);
     if (request.method === 'POST' && ['watch', 'unwatch', 'rules', 'toggle', 'buy', 'close'].includes(action)) {
