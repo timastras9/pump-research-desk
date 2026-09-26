@@ -31,6 +31,20 @@ test('collective input labels every row and stays under the payload cap at 100 t
  const input=compactAggregateInput(rows);
  assert.ok(JSON.stringify(input).length<24000,`payload ${JSON.stringify(input).length}`);
  assert.equal(input.table.length,100);
- assert.equal(input.table[0].at(-2),'W');assert.equal(input.table[1].at(-2),'L');
+ const col=input.columns.indexOf('outcome_W_winner_L_loser');assert.ok(col>0);assert.equal(input.table[0][col],'W');assert.equal(input.table[1][col],'L');
  assert.equal(input.winnerLoserComparison.winners,12);
+});
+
+test('chat traits are compared and missing chat never counts as quiet chat',async()=>{
+ const {compactChat}=await import('../src/study-analysis');
+ const cw=(n:number,pos:number,neg:number)=>[60,120,600].map(seconds=>({seconds,availability:n?'observed-comments':'observed-empty',uniqueComments:n,sentiment:{positiveComments:pos,negativeComments:neg},repeatedTerms:[{term:'moon',commentCount:2},{term:'send',commentCount:2}]}));
+ const rows=[{...row('w',3,launch('axiom')),chatWindows:cw(4,3,0)},{...row('l',1,launch('pump-ipfs')),chatWindows:cw(0,0,0)},{...row('t',0.1,launch('pump-ipfs'))}];
+ const f=Object.fromEntries(compareWinnersLosers(rows).features.map(([k,...v])=>[k,v]));
+ // The tanked row is also a loser, but without chat it is left out of every denominator.
+ assert.deepEqual(f.chat_observed,['1/1','1/1','0/0']);
+ assert.deepEqual(f.any_comment_first_120s,['1/1','0/1','0/0']);
+ assert.deepEqual(f.positive_outnumbers_negative_120s,['1/1','0/0','0/0']);
+ assert.deepEqual(compactChat(undefined),{availability:'not-observed'});
+ const many=Array.from({length:100},(_,i)=>({...row('So1anaMint'+String(i).padStart(34,'x'),i%10===0?2:0.3,launch('axiom',{twitter:true})),chatWindows:cw(120,60,30)}));
+ const size=JSON.stringify(compactAggregateInput(many)).length;assert.ok(size<24000,`payload ${size}`);
 });

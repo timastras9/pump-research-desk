@@ -63,12 +63,35 @@ export async function acquireObservationBrowser(env:Env,sessionId?:string){
   if(sessionId){try{return {browser:await puppeteer.connect(boundedBrowser(env),sessionId),reused:true};}catch{/* Expired sessions require a fresh browser; caller records the gap. */}}
   return {browser:await puppeteer.launch(boundedBrowser(env),{keep_alive:120000}),reused:false};
 }
+export type ChatSnapshot={capturedAt:number;status:'available'|'unavailable';messages:{text:string;publishedAt:string|null}[]};
+async function openTokenCallouts(page:Page){
+  try{
+    const tabs=await page.$$('[role="tab"]');
+    for(const tab of tabs){if((await tab.evaluate(el=>el.textContent))?.trim()==='Callouts'){await tab.click();break;}}
+  }finally{await page.evaluate(()=>window.scrollTo(0,0));}
+}
+export async function readTokenChat(page:Page):Promise<ChatSnapshot>{
+  try{
+    const data=await page.evaluate(()=>{
+      const panel=document.querySelector('[data-testid="coin-callouts-feed-panel"]');
+      if(!panel)return null;
+      // pump.fun renders an empty-state message instead of the list when a coin has no callouts yet.
+      const list=panel.querySelector('ul[aria-label="Callouts for this coin"]');
+      if(!list)return [];
+      return Array.from(list.querySelectorAll('article[data-testid="coin-callouts-feed-card"]'))
+        .filter(card=>!card.parentElement?.closest('article[data-testid="coin-callouts-feed-card"]')).slice(0,30)
+        .map(card=>({text:card.querySelector('p[data-testid="callout-note"]')?.textContent?.trim().slice(0,1000)??'',publishedAt:card.querySelector('time')?.getAttribute('datetime')??null}))
+        .filter(message=>message.text.length>0);
+    });
+    return {capturedAt:Date.now(),status:data===null?'unavailable':'available',messages:data??[]};
+  }catch{return {capturedAt:Date.now(),status:'unavailable',messages:[]};}
+}
 export type Frame={index:number;captureStartedAt:number;capturedAt:number;screenshotMs:number;image:string;text:string;priceUsd:number|null;priceRaw:string;priceMode:string;priceReadAt:number};
-export async function observe(env:Env,mint:string,id:string,seconds:number,assumptions:unknown,saveFrame:(frame:Frame)=>Promise<void>,createdAt:number|null=null,options:{maxVision?:number;skipAnalysis?:boolean;allowOlder?:boolean;endAt?:number;sessionId?:string;keepSession?:boolean;shouldContinue?:()=>boolean;onSession?:(id:string,reused:boolean)=>Promise<void>}={}) {
+export async function observe(env:Env,mint:string,id:string,seconds:number,assumptions:unknown,saveFrame:(frame:Frame)=>Promise<void>,createdAt:number|null=null,options:{maxVision?:number;skipAnalysis?:boolean;allowOlder?:boolean;endAt?:number;sessionId?:string;keepSession?:boolean;captureChat?:boolean;onChat?:(snapshot:ChatSnapshot)=>Promise<void>;shouldContinue?:()=>boolean;onSession?:(id:string,reused:boolean)=>Promise<void>}={}) {
   const browserOpenedAt=Date.now();const usage:unknown[]=[];
   const {browser,reused:sessionReused}=await acquireObservationBrowser(env,options.sessionId);let retainedSessionId:string|null=null;let timedOut=false;
   const captureTimeout=setTimeout(()=>{timedOut=true;void browser.close().catch(()=>{});},Math.max(10000,Math.min(seconds*1000+45000,(options.endAt??Infinity)-Date.now()+5000)));
-  const samples:Omit<Frame,'image'|'text'>[]=[];
+  const samples:Omit<Frame,'image'|'text'>[]=[];const chatSnapshots:ChatSnapshot[]=[];let lastChatReadAt=0;
   const reviews:{frame:number;startedAt:number;finishedAt:number;text:string;ok:boolean;vision?:ReturnType<typeof visionResult>}[]=[];
   let active:Promise<void>|null=null,attempts=0,skipped=0,lastAnalysis=0,startedAt=Date.now(),failure:string|null=null;
   try {
@@ -80,6 +103,7 @@ export async function observe(env:Env,mint:string,id:string,seconds:number,assum
     await page.waitForSelector('[data-testid="coin-chart-display-mode-switch"]',{timeout:15000});
     const switcher=await page.$('[data-testid="coin-chart-display-mode-switch"]');
     if(switcher && (await switcher.evaluate(e=>e.textContent))?.trim()!=='Price') await switcher.click();
+    if(options.captureChat&&!existing){try{await openTokenCallouts(page);}catch{/* Missing chat does not invalidate price evidence. */}}
     if(!existing)await sleep(1000);startedAt=Date.now();
     if(!options.allowOlder && createdAt!==null && startedAt-createdAt>60000)throw Error('Token aged past one minute while the page loaded. Scan for a fresh launch.');
     while((options.shouldContinue?.()??true) && Date.now()-startedAt<seconds*1000 && Date.now()<(options.endAt??Infinity) && samples.length<seconds*2) {
@@ -94,6 +118,7 @@ export async function observe(env:Env,mint:string,id:string,seconds:number,assum
       const priceReadAt=Date.now();const frame:Frame={index:samples.length,captureStartedAt,capturedAt,screenshotMs:capturedAt-captureStartedAt,image,...data,priceReadAt,priceUsd:usdPrice(data.priceRaw,data.priceMode)};
       const {image:_image,text:_text,...sample}=frame;samples.push(sample);
       await saveFrame(frame);
+      if(options.captureChat&&captureStartedAt-lastChatReadAt>=5000){lastChatReadAt=captureStartedAt;const snapshot=await readTokenChat(page);chatSnapshots.push(snapshot);await options.onChat?.(snapshot);}
       if(!active && attempts<(options.maxVision??6) && captureStartedAt-lastAnalysis>=5000){
         attempts++;lastAnalysis=captureStartedAt;const aiStarted=Date.now();
         active=(async()=>{try {
@@ -113,7 +138,7 @@ export async function observe(env:Env,mint:string,id:string,seconds:number,assum
   const measurements={durationMs:samples.length?samples.at(-1)!.priceReadAt-samples[0].priceReadAt:0,priceSamples:prices.length,totalSamples:samples.length,firstPrice:prices[0]?.priceUsd??null,lastPrice:prices.at(-1)?.priceUsd??null,changePct:prices.length?((prices.at(-1)!.priceUsd!/prices[0].priceUsd!)-1)*100:null,visionLatencyMs:reviews.map(r=>r.finishedAt-r.startedAt)};
   const analysisStartedAt=Date.now();let analysis='No analysis available.';
   try {if(!options.skipAnalysis)analysis=await kimi(env,prompts.analysis,JSON.stringify({measurements,reviews,paper}),undefined,500,u=>usage.push(u));}catch{analysis='Kimi analysis unavailable. Recorded evidence and deterministic paper comparisons remain available.';}
-  return {sessionId:retainedSessionId,sessionReused,id,mint,startedAt,completedAt:Date.now(),seconds,usage,browserDurationMs,model:MODEL,promptVersion:PROMPT_VERSION,targetIntervalMs:500,frameCount:samples.length,reviews,samples,measurements,skippedAnalysisFrames:skipped,failure,paper,analysis,analysisStartedAt,analysisFinishedAt:Date.now(),
+  return {chatSnapshots,sessionId:retainedSessionId,sessionReused,id,mint,startedAt,completedAt:Date.now(),seconds,usage,browserDurationMs,model:MODEL,promptVersion:PROMPT_VERSION,targetIntervalMs:500,frameCount:samples.length,reviews,samples,measurements,skippedAnalysisFrames:skipped,failure,paper,analysis,analysisStartedAt,analysisFinishedAt:Date.now(),
     meanIntervalMs:intervals.length?intervals.reduce((a,b)=>a+b,0)/intervals.length:null,maxIntervalMs:intervals.length?Math.max(...intervals):null,
     mode:'observation-and-paper-proxies',liveTrading:false,note:'Snapshots are not trade candles. Price freshness and executable fills are unverified. AI output is evidence, not an order. Each exit strategy is an independent hypothetical experiment.'};
 }
