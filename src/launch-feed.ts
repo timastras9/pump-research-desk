@@ -3,7 +3,7 @@ import type {Candidate} from './research-model';
 // pump.fun's public "newest coins" list: ~0.2s per call, no browser, no API key. It rate-limits
 // bursts, so callers poll no faster than every few seconds and fall back to the browser scan on error.
 export const LAUNCH_FEED_URL='https://frontend-api-v3.pump.fun/coins?offset=0&limit=50&sort=created_timestamp&order=DESC&includeNsfw=false';
-export const LAUNCH_POLL_MS=5000;
+export const LAUNCH_POLL_MS=2000;   // poll cadence, measured from each poll start (was 5 s after the admission work)
 
 const num=(v:unknown)=>typeof v==='number'&&Number.isFinite(v)?v:null;
 export function candidatesFromFeed(rows:unknown,now:number):Candidate[] {

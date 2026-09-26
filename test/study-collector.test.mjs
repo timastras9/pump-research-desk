@@ -69,6 +69,16 @@ test('launch filters skip website launches and re-check tokens below the minimum
  const s=await h.coordinator.status();assert.equal(s.campaign.seenCount,1);
  await assert.rejects(harness().coordinator.start({minMarketCapUsd:-1}),/Minimum market cap/);
 });
+test('a burst of launches is admitted concurrently with latency recorded, and polls keep a fixed cadence',async()=>{
+ const candidates=[0,1,2].map(i=>({mint:`burst${i}`,name:`b${i}`,group:'new',createdAt:1_800_000_000_000-4000,firstSeenAt:1_800_000_000_000-1000,detectedAt:1_800_000_000_000,raw:{}}));
+ const h=harness({candidates});let inflight=0,most=0;
+ globalThis.fetch=async()=>{inflight++;most=Math.max(most,inflight);await new Promise(r=>setTimeout(r,5));inflight--;return {ok:false,json:async()=>({})};};
+ const c=await h.coordinator.start({maxTokens:10});await h.coordinator.alarm();
+ assert.equal(most,3,'all three launch lookups ran at the same time');
+ const d=await h.coordinator.detail(c.id);assert.equal(d.tokens.length,3);
+ for(const t of d.tokens){assert.equal(t.latency.seenAfterLaunchMs,3000);assert.equal(t.latency.admitAfterSeenMs,1000);}
+ const s=await h.coordinator.status();assert.equal(s.nextAlarmAt,s.campaign.lastScanAt+30000,'next poll is timed from this poll start');
+});
 test('trained model: owner sets the active model; finished runs queue a model paper run',async()=>{
  const spec=JSON.stringify({format:'pump-model-v1',name:'model-v3',sha256:'abc123'});
  const h=harness({media:{'models/model-v3.json':spec}});
