@@ -50,6 +50,7 @@ Read this first in a new session. Then check `~/.claude/projects/-Users-tim-Docu
 | Paper trade net % on every frame and on each Watching-now card | bd183c8 |
 | Copycat filter: record each launch name once per study | caf34f2 |
 | Layout guard test | be33ca9 |
+| Final numbers panel at the top of each study (next step 3, built) | a32bab0 |
 
 UI changes in that batch: frame status line gains "Paper: open +x%"; Watching-now cards gain one paper line; study notes gain "skipped as copycat names: N"; Model tab gains a "Seen" column. Nothing removed.
 
