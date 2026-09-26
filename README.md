@@ -111,3 +111,7 @@ The owner authorized pump.fun welcome terms acceptance and confirmed age over 18
 The Durable Object caps this app at ten pilot starts per UTC day and two minutes between starts; failed starts count. These are usage controls, not an exact dollar cap. No CoinGecko calls are made. Frames remain in browser memory until downloaded; export before navigating away. The first deployed timing test captured 18 frames averaging 578ms, but showed the welcome overlay and failed vision calls. It is not a performance or profitability result.
 
 Dependency note: npm audit reports three related high-severity findings in Cloudflare Puppeteer's transitive browser-download ZIP extraction dependencies. This Worker uses Cloudflare-hosted Chromium and does not download/extract browser archives. Do not use this package's local browser installer on untrusted archives; monitor upstream for a patched dependency chain.
+
+### Kimi vision selection
+
+The visual pilot now uses `@cf/moonshotai/kimi-k2.6` via the Workers AI binding with base64 image messages, a 200-token completion limit, `chat_template_kwargs.enable_thinking=false`, and a 20-second inference timeout. It reads the chat-completions `choices[0].message.content` response and includes the model name in exports. The one-in-flight and three-attempt caps remain. Cloudflare documents this model as Cloudflare-hosted and requiring Workers Paid or prepaid AI Gateway credits; that description does not establish US-only processing. No plan upgrade is performed by the app.
