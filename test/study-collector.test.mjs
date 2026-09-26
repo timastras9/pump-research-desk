@@ -16,7 +16,8 @@ function harness(options={}){
   }},setAlarm:async value=>{alarms.set(key,value);},getAlarm:async()=>alarms.get(key)??null,deleteAlarm:async()=>{alarms.delete(key);}};}
   const storage=makeStorage('parent');
   const db={prepare(query){let args=[];const table=Object.keys(tables).find(t=>query.includes(t));return {bind(...values){args=values;return this;},async run(){tables[table].set(args[0],{data:args.at(-1),args});if(options.dbHook)await options.dbHook(query,args);},async first(){return tables[table].get(args[0])??null;},async all(){let rows=[...tables[table].values()];if(query.includes('campaign_id')||query.includes('token_id'))rows=rows.filter(r=>r.args[1]===args[0]);return {results:rows};}};}};
-  const env={CRYPTO_STUDY:db,CRYPTO_MEDIA:{put:async()=>{}},AI:{run:async()=>({})}};
+  const media=new Map(Object.entries(options.media??{}));
+  const env={CRYPTO_STUDY:db,CRYPTO_MEDIA:{put:async(k,v)=>{media.set(k,v);},get:async k=>media.has(k)?{text:async()=>media.get(k)}:null},AI:{run:async()=>({})}};
   class Clock extends Date{static now(){return now;}}
   const candidate={mint:'123456789ABCDEFGHJKLMNPQRSTUVWXYZabcd',name:'test',group:'new',createdAt:now,detectedAt:now,firstSeenAt:now,raw:{},marketCapUsd:null,athUsd:null,volume24hUsd:null,traders:null,transactions:null};
   globalThis.fetch=async()=>({ok:false,json:async()=>({})});
@@ -28,6 +29,8 @@ function harness(options={}){
     './launch-feed':{fetchNewLaunches:async()=>{scans++;return {candidates:options.candidates??[candidate],errors:[],browserDurationMs:0};},LAUNCH_POLL_MS:30000},
     './study-chat':{ingestChat:async(prev,snap)=>({mint:snap.mint,observations:[...(prev?.observations??[])],checks:[]}),summarizeChatAsOf:(st,start,seconds)=>({seconds,availability:'observed-empty',uniqueComments:0,sentiment:{positiveComments:0,negativeComments:0}}),wordMovementAssociations:()=>({matchedComments:0,terms:[]})},
     './research-model':{freshLaunch:c=>now-c.createdAt<=60000},
+    './model':{Model:class{constructor(spec){this.spec=spec;}}},
+    './model-runner':{stepJob:async()=>'finished',newJob:(campaignId,model,tokens,now)=>({campaignId,model,dueAt:now,queuedAt:now,done:0,total:tokens.length,errors:[]}),d1Deps:()=>({}),MODEL_SCHEMA:[]},
     './study-analysis':{reviewMistakes:async()=>({lessons:null,usage:{estimatedUsd:0},error:null}),compactStudyInput:x=>x,compactAggregateInput:x=>x,compareWinnersLosers:()=>({features:[]}),priceSeries:()=>[],exitMetrics:()=>({}),outcomeLabel:()=>'unscored',launchInfoFromCoin:()=>null,isTerminalLaunch:()=>false,COLLECTIVE_PROMPT:'collective',summarizeSamples:()=>({classification:'flat'}),analyzeStudy:async()=>({analysis:{},usage:{estimatedUsd:0},error:null}),aggregateStudies:rows=>({all:{count:rows.length}}),usageFromResponse:()=>({estimatedUsd:0})},
   };
   const source=ts.transpileModule(readFileSync(new URL('../src/study-collector.ts',import.meta.url),'utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText;
@@ -64,4 +67,19 @@ test('launch filters skip website launches and re-check tokens below the minimum
  const d=await h.coordinator.detail(c.id);assert.equal(d.tokens.length,0);assert.equal(d.campaign.skippedFilter,1);
  const s=await h.coordinator.status();assert.equal(s.campaign.seenCount,1);
  await assert.rejects(harness().coordinator.start({minMarketCapUsd:-1}),/Minimum market cap/);
+});
+test('trained model: owner sets the active model; finished runs queue a model paper run',async()=>{
+ const spec=JSON.stringify({format:'pump-model-v1',name:'model-v3',sha256:'abc123'});
+ const h=harness({media:{'models/model-v3.json':spec}});
+ await assert.rejects(h.coordinator.queueModelRun('none'),/No active model/);
+ await assert.rejects(h.coordinator.setActiveModel('models/missing.json','Tim'),/not found/);
+ await assert.rejects(h.coordinator.setActiveModel('../etc/passwd','Tim'),/must look like/);
+ await assert.rejects(h.coordinator.setActiveModel('models/model-v3.json',' '),/Approver/);
+ const s=await h.coordinator.setActiveModel('models/model-v3.json','Tim');
+ assert.deepEqual([s.active.name,s.active.sha,s.active.by],['model-v3','abc123','Tim']);assert.equal(s.history.length,1);
+ const c=await h.coordinator.start({maxTokens:1});await h.coordinator.alarm();await h.runChildren();h.advance(600001);await h.runChildren();await h.coordinator.alarm();
+ assert.equal((await h.coordinator.detail(c.id)).campaign.status,'finished');
+ const jobs=h.coordinator.modelState().jobs;
+ assert.equal(jobs.length,1);assert.equal(jobs[0].campaignId,c.id);assert.equal(jobs[0].model.sha,'abc123');
+ await h.coordinator.alarm();assert.equal(h.coordinator.modelState().jobs.length,0,'the next alarm runs the job to completion');
 });

@@ -5,6 +5,8 @@ import {ingestChat, summarizeChatAsOf, wordMovementAssociations, type ChatState}
 import {fetchNewLaunches, LAUNCH_POLL_MS} from './launch-feed';
 import {paperTrade, summarizePaper, tunePaper, validRules, passesFilter, classifyTrade, mistakeSummary, PAPER_RULES, PAPER_FILTERS, type PaperTrade, type PaperRules, type TuneToken, type Mistake} from './paper-trader';
 import {freshLaunch, type Candidate} from './research-model';
+import {Model, type ModelSpec} from './model';
+import {stepJob, newJob, d1Deps, MODEL_SCHEMA, type ModelJob, type ModelPointer, type RunToken} from './model-runner';
 import {summarizeSamples, analyzeStudy, aggregateStudies, usageFromResponse, compactStudyInput, compactAggregateInput, reviewMistakes, compareWinnersLosers, priceSeries, exitMetrics, outcomeLabel, launchInfoFromCoin, isTerminalLaunch, COLLECTIVE_PROMPT, type LaunchInfo} from './study-analysis';
 
 type Chunk=Awaited<ReturnType<typeof observe>> & {frames:{index:number;capturedAt:number;key:string}[];chatSnapshots?:ChatSnapshot[]};
@@ -85,7 +87,28 @@ export class StudyCoordinator extends StudyStore{
     catch(error){c.paperSuggestion={at:Date.now(),error:error instanceof Error?error.message:'Tuning failed'};}c.aiEstimatedUsd+=result.usage.estimatedUsd??0;if(result.usage.estimatedUsd===null)c.unknownUsageCalls++;
     await this.saveCampaign(c);
   }
-  async alarm(){const c=this.campaign();if(!c||c.status!=='running')return;await this.ctx.storage.setAlarm(Date.now()+90000);try{
+  // ---- trained model: paper-trade every finished run with the active model (model-runner.ts); owner picks the model ----
+  private schemaReady=false;
+  private async modelSchema(){if(!this.schemaReady){for(const s of MODEL_SCHEMA)await this.env.CRYPTO_STUDY.prepare(s).run();this.schemaReady=true;}}
+  private async runTokens(campaignId:string):Promise<RunToken[]>{const rows=await this.env.CRYPTO_STUDY.prepare('SELECT data FROM study_tokens WHERE campaign_id=? ORDER BY started_at').bind(campaignId).all<{data:string}>();return rows.results.map(r=>JSON.parse(r.data) as Token).map(t=>({id:t.id,mint:t.mint,name:t.name,createdAt:t.createdAt??null}));}
+  modelState(){return {active:this.read<ModelPointer>('activeModel')??null,history:this.read<ModelPointer[]>('modelHistory')??[],jobs:this.read<ModelJob[]>('modelJobs')??[]};}
+  async setActiveModel(key:string,by:string){
+    if(!/^models\/[\w.-]+\.json$/.test(key))throw Error('Model key must look like models/<name>.json.');if(!by.trim())throw Error('Approver name required.');
+    const o=await this.env.CRYPTO_MEDIA.get(key);if(!o)throw Error(`Model file ${key} not found in R2.`);const spec=JSON.parse(await o.text()) as ModelSpec;new Model(spec);
+    const p:ModelPointer={key,name:spec.name,sha:spec.sha256,activatedAt:Date.now(),by:by.slice(0,60)};this.write('activeModel',p);this.write('modelHistory',[...(this.read<ModelPointer[]>('modelHistory')??[]),p].slice(-50));return this.modelState();}
+  async queueModelRun(campaignId:string){
+    const p=this.read<ModelPointer>('activeModel');if(!p)throw Error('No active model. Publish one and set it active first.');
+    const tokens=await this.runTokens(campaignId);if(!tokens.length)throw Error('That study has no tokens.');
+    const jobs=(this.read<ModelJob[]>('modelJobs')??[]).filter(j=>!(j.campaignId===campaignId&&j.model.sha===p.sha));jobs.push(newJob(campaignId,p,tokens,Date.now()));this.write('modelJobs',jobs);
+    if(this.campaign()?.status!=='running')await this.ctx.storage.setAlarm(Date.now()+1000);return this.modelState();}
+  private async modelStep(){
+    const jobs=this.read<ModelJob[]>('modelJobs')??[];const job=jobs[0];if(!job)return;
+    try{await this.modelSchema();const r=await stepJob(job,d1Deps(this.env.CRYPTO_STUDY,this.env.CRYPTO_MEDIA,c=>this.runTokens(c)));
+      if(r==='finished'){jobs.shift();await this.afterModelRun(job);}
+      this.write('modelJobs',jobs);if(jobs.length)await this.ctx.storage.setAlarm(r==='wait'?jobs[0].dueAt:Date.now()+1000);}
+    catch(error){job.errors=[...job.errors,error instanceof Error?error.message.slice(0,200):'Model step failed'].slice(-20);if(job.errors.length>=20)jobs.shift();this.write('modelJobs',jobs);if(jobs.length)await this.ctx.storage.setAlarm(Date.now()+30000);}}
+  private async afterModelRun(_job:ModelJob){}
+  async alarm(){const c=this.campaign();if(!c||c.status!=='running'){await this.modelStep();return;}await this.ctx.storage.setAlarm(Date.now()+90000);try{
       for(const pending of c.pending??[]){if(!this.isRunning(c.id))return;await this.saveToken(pending);await this.env.RECORDERS.getByName(pending.id).initialize(pending);}
       c.pending=[];await this.saveCampaign(c);
       const active=(await this.tokens(c)).filter(t=>t.status==='watching');c.tokens=(await this.tokens(c)).length;
@@ -105,7 +128,7 @@ export class StudyCoordinator extends StudyStore{
       }
       if(!this.isRunning(c.id))return;
       const remaining=(await this.tokens(c)).filter(t=>t.status==='watching');
-      if(!remaining.length&&(Date.now()>=c.admissionEndsAt||c.tokens>=c.maxTokens)){await this.analyzeCampaign(c);if(!this.isRunning(c.id))return;c.status='finished';await this.saveCampaign(c);if(this.campaign()?.id===c.id)await this.ctx.storage.deleteAlarm();}
+      if(!remaining.length&&(Date.now()>=c.admissionEndsAt||c.tokens>=c.maxTokens)){await this.analyzeCampaign(c);if(!this.isRunning(c.id))return;c.status='finished';await this.saveCampaign(c);if(this.campaign()?.id===c.id)await this.ctx.storage.deleteAlarm();if(this.read<ModelPointer>('activeModel'))await this.queueModelRun(c.id).catch(()=>{});}
       else if(this.isRunning(c.id))await this.ctx.storage.setAlarm(Date.now()+(Date.now()<c.admissionEndsAt?LAUNCH_POLL_MS:10000));
     }catch{if(this.isRunning(c.id)){c.errors.push('Discovery step failed; retained evidence and retry scheduled.');c.errors=c.errors.slice(-20);await this.saveCampaign(c);if(this.isRunning(c.id))await this.ctx.storage.setAlarm(Date.now()+10000);}}
   }
