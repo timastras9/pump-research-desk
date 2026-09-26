@@ -54,5 +54,20 @@ class EngineTest(unittest.TestCase):
         self.assertAlmostEqual(f['net_sol'], 1.3); self.assertAlmostEqual(f['churn_share'], 1 / 3)
         self.assertEqual(E.features(ep, 5)['sellers'], 0.0)
 
+class FeatureTableTest(unittest.TestCase):
+    def test_fast_table_matches_per_second_features(self):
+        rng = np.random.default_rng(1)
+        prices = list(np.exp(np.cumsum(rng.normal(0, 0.05, 60))) * 1e-6)
+        n = E.WINDOW_S + 1; z = lambda: np.zeros(n)
+        tr = {'buy_sol': z(), 'sell_sol': z(), 'buys': z(), 'sells': z(), 'dev_buy': z(), 'dev_sell': z(), 'first_buy_sec': {}, 'seller_first': {}, 'buy_by_sec': [[] for _ in range(n)]}
+        for sec, w, sol in [(0, 'dev', 1.0), (2, 'a', 0.3), (5, 'b', 0.9), (9, 'a', 0.2), (20, 'c', 2.0)]:
+            tr['buy_by_sec'][sec].append((w, sol)); tr['buy_sol'][sec] += sol; tr['first_buy_sec'].setdefault(w, sec)
+        tr['sell_sol'][12] = 0.4; tr['seller_first']['a'] = 12; tr['dev_buy'][0] = 1.0
+        ep = ep_from(prices, tr); ep.volume = rng.integers(0, 3, n).astype(float)
+        table = E.feature_table(ep)
+        for t in (1, 5, 12, 30, 59):
+            slow = E.feature_vector(ep, t, E.ALL_FEATURES)
+            np.testing.assert_allclose(table[t], slow, rtol=1e-4, atol=1e-5, err_msg=f't={t}')
+
 if __name__ == '__main__':
     unittest.main()

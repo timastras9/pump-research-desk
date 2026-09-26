@@ -100,6 +100,46 @@ def features(ep: Episode, t: int) -> dict:
 def feature_vector(ep: Episode, t: int, names: list[str]) -> np.ndarray:
     f = features(ep, t); return np.array([f[k] for k in names], dtype=np.float32)
 
+ALL_FEATURES = PRICE_FEATURES + WALLET_FEATURES + TAG_FEATURES
+
+def feature_table(ep: Episode) -> np.ndarray:
+    """All features for every second at once (row t uses data <= t only). Same values as features(ep, t), computed
+    with running totals so RL can read any second instantly. Cached on the episode."""
+    cached = getattr(ep, '_ftable', None)
+    if cached is not None: return cached
+    n = WINDOW_S + 1; p, v = ep.price, ep.volume; lp = np.log(p); t = np.arange(n)
+    ret = np.diff(lp, prepend=lp[0]); c1 = np.cumsum(ret); c2 = np.cumsum(ret ** 2); cnt = np.maximum(t, 1)
+    mean = c1 / cnt; var = np.maximum(c2 / cnt - mean ** 2, 0)   # population std of returns 1..t (matches np.std)
+    hi = np.maximum.accumulate(p); act = np.cumsum(v > 0); vc = np.cumsum(v)
+    last5 = vc - np.concatenate([np.zeros(5), vc[:-5]]); before = np.concatenate([np.zeros(5), vc[:-5]]); nb = np.maximum(t - 4, 1)
+    cols = {'since_launch': t.astype(float), 'ret_launch': (p / p[0] - 1) * 100, 'active_secs': act.astype(float), 'active_share': act / (t + 1), 'volume_log': np.log1p(vc),
+            'vol_accel': (last5 + 1) / (np.where(t - 4 > 0, before, vc[0]) / nb * 5 + 1), 'volatility': np.where(t > 1, np.sqrt(var) * 100, 0.0), 'max_rise': (hi / p[0] - 1) * 100,
+            'drop_from_high': (p / hi - 1) * 100, 'mom5': (p / p[np.maximum(t - 5, 0)] - 1) * 100, 'mom15': (p / p[np.maximum(t - 15, 0)] - 1) * 100}
+    for k in TAG_FEATURES: cols[k] = np.full(n, float(ep.tags[k]))
+    tr = ep.trades
+    if tr is None:
+        for k in WALLET_FEATURES: cols[k] = np.full(n, np.nan)
+    else:
+        buyers_at = np.zeros(n); sellers_at = np.zeros(n); top3 = np.zeros(n); maxb = np.zeros(n); churn = np.zeros(n)
+        amounts: dict = {}; buyers: set = set(); sellers: set = set(); first_sell = tr['seller_first']
+        sells_by_sec: list = [[] for _ in range(n)]
+        for w, sec in first_sell.items():
+            if 0 <= sec < n: sells_by_sec[sec].append(w)
+        for sec in range(n):
+            for w, sol in tr['buy_by_sec'][sec]: amounts[w] = amounts.get(w, 0.0) + sol; buyers.add(w)
+            for w in sells_by_sec[sec]: sellers.add(w)
+            buyers_at[sec] = len(buyers); sellers_at[sec] = len(sellers); tot = sum(amounts.values())
+            top3[sec] = sum(sorted(amounts.values(), reverse=True)[:3]) / tot if tot else 0.0; maxb[sec] = max(amounts.values(), default=0.0)
+            u = len(buyers | sellers); churn[sec] = len(buyers & sellers) / max(1, u)
+        bs, ss = np.cumsum(tr['buy_sol']), np.cumsum(tr['sell_sol'])
+        snipers = float(sum(1 for w, s in tr['first_buy_sec'].items() if s <= 3 and w != ep.creator))
+        cols.update({'buyers': buyers_at, 'sellers': sellers_at, 'buyer_seller_ratio': buyers_at / np.maximum(1, sellers_at), 'buy_sol': bs, 'sell_sol': ss, 'net_sol': bs - ss,
+                     'max_buy_sol': maxb, 'top3_share': top3, 'dev_bought_sol': np.cumsum(tr['dev_buy']), 'dev_sold': (np.cumsum(tr['dev_sell']) > 0).astype(float),
+                     'snipers': np.full(n, snipers), 'churn_share': churn})
+    table = np.stack([cols[k] for k in ALL_FEATURES], axis=1).astype(np.float32)
+    ep._ftable = table
+    return table
+
 # ---------- entry schedule (causal) ----------
 def buy_decision_time(ep: Episode) -> int | None:
     """First trade after first sight, within DEAD_AFTER_S; None if dead or already pumped (no chase)."""
