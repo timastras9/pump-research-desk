@@ -40,6 +40,9 @@ export function recordingDoc(c: Any, t: Any, chunks: Any[]) {
     }
   }
   frames.sort((a, b) => a.at - b.at);
+  const seen = new Set<string>(), chat: { at: number; text: string; publishedAt: string | null }[] = [];   // each comment once, when first on screen
+  for (const snap of chunks.flatMap(ch => ch.chat ?? []).sort((a: Any, b: Any) => a.capturedAt - b.capturedAt))
+    for (const m of snap.messages ?? []) { const text = String(m.text ?? '').trim(), id = `${text}|${m.publishedAt ?? ''}`; if (text && !seen.has(id)) { seen.add(id); chat.push({ at: snap.capturedAt, text: text.slice(0, 500), publishedAt: m.publishedAt ?? null }); } }
   const base = t.firstPriceUsd || frames.find(f => f.price)?.price || null;
   const pct = (p: number | null) => (p && base ? r1((p / base - 1) * 100) : null);
   const at = (ts: unknown) => { if (typeof ts !== 'number' || !frames.length) return null;   // frame at or just before a moment
@@ -55,6 +58,8 @@ export function recordingDoc(c: Any, t: Any, chunks: Any[]) {
     keyMoments: { firstFrame: at(frames[0]?.at), paperEntry: at(p.entryAt), paperPartialSale: at(p.partialAt), paperExit: at(p.exitAt), peak: peak ? at(peak.at) : null, lastFrame: at(frames.at(-1)?.at) },
     paperExitReason: p.exitReason ?? p.skipReason ?? null,
     vision,   // what the vision model saw on screen during recording
+    chatComments: chat.length,
+    chat: chat.map(m => ({ ...at(m.at)!, text: m.text, postedAt: m.publishedAt })),   // token chat: first seen at sec, price then, frame then
     timeline, // [sec after launch, % from first price, frame]
   };
 }
@@ -80,6 +85,7 @@ export function tokenDoc(c: Any, t: Any, modelRow: Any | null = null) {
     whatWentWrong: t.paperMistake?.label ?? null, whatWentWrongFiltered: t.paperFilteredMistake?.label ?? null,
     exits: t.exits ?? null,
     // Where the screenshots of this token live (same bucket); the link opens on the dashboard after sign-in.
+    chat: { doc: recordingKey(c, t), note: 'chat comments with the second, price and frame when each appeared are in the recording doc' },
     recording: { doc: recordingKey(c, t), mediaFolder: t.mediaPrefix ?? null, frames: t.frameCount ?? 0, capturedSeconds: secs(t.capturedMs),
       latestFrame: t.latestFrame?.key ?? null, latestFrameAt: iso(t.latestFrame?.capturedAt),
       latestFrameUrl: t.latestFrame?.key ? `/api/studies/media?key=${encodeURIComponent(t.latestFrame.key)}` : null },
@@ -133,7 +139,7 @@ Data exported from the study database after every study and every model run. Pap
 ## Documents
 - rag/index.json: one line per study (date, token counts, outcomes, paper totals, path of the study document).
 - rag/studies/<date>_<id>.json: one study. Totals, outcomes, best/worst, paper results, mistakes, model runs, excluded tokens, and a short line per token with the path of its token document.
-- rag/recordings/<date>_<study id>/<name>_<mint>.json: one recording (the screenshots as data). Key moments (paper entry, partial sale, exit, peak) with the exact frame, the vision notes seen on screen, and a timeline row per second: [sec after launch, % from first price, frame]. Open a frame at /api/studies/media?key=<mediaFolder>/<frame>.
+- rag/recordings/<date>_<study id>/<name>_<mint>.json: one recording (the screenshots as data). Key moments (paper entry, partial sale, exit, peak) with the exact frame, the vision notes seen on screen, the token chat (each comment with the second, price and frame when it first appeared), and a timeline row per second: [sec after launch, % from first price, frame]. Open a frame at /api/studies/media?key=<mediaFolder>/<frame>.
 - rag/tokens/<date>_<study id>/<name>_<mint>.json: one token. Outcome, peak and timing, launch facts, both paper trades, model result, price every 5 seconds.
 
 ## Outcome lines
@@ -180,7 +186,7 @@ export const mergeIndex = (studies: Any[], line: Any) => ({ updatedAt: new Date(
 export const TOKEN_SELECT = "json_remove(data,'$.tape','$.analysis','$.analysisHistory','$.chatWindows','$.chatAssociations','$.earlyWindows','$.laterOutcomes','$.candidate.raw') AS data";
 
 /** Chunk fields the recording doc needs (frames, price samples, vision verdicts), without raw model text. */
-export const CHUNK_SELECT = "json_object('startedAt',json_extract(data,'$.startedAt'),'frames',json_extract(data,'$.frames'),'samples',json_extract(data,'$.samples'),'reviews',(SELECT json_group_array(json_object('frame',json_extract(r.value,'$.frame'),'vision',json_extract(r.value,'$.vision'))) FROM json_each(data,'$.reviews') r)) AS data";
+export const CHUNK_SELECT = "json_object('startedAt',json_extract(data,'$.startedAt'),'frames',json_extract(data,'$.frames'),'samples',json_extract(data,'$.samples'),'chat',json_extract(data,'$.chatSnapshots'),'reviews',(SELECT json_group_array(json_object('frame',json_extract(r.value,'$.frame'),'vision',json_extract(r.value,'$.vision'))) FROM json_each(data,'$.reviews') r)) AS data";
 
 /** Export one study (and all its tokens) from D1 to R2, then update the index. Returns what was written. */
 export async function exportStudy(db: D1Database, bucket: Bucket, campaignId: string) {
