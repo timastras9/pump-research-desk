@@ -79,6 +79,13 @@ test('a burst of launches is admitted concurrently with latency recorded, and po
  for(const t of d.tokens){assert.equal(t.latency.seenAfterLaunchMs,3000);assert.equal(t.latency.admitAfterSeenMs,1000);}
  const s=await h.coordinator.status();assert.equal(s.nextAlarmAt,s.campaign.lastScanAt+30000,'next poll is timed from this poll start');
 });
+test('copycat launches (same name, new mint) are recorded once and counted as skipped',async()=>{
+ const mk=(mint,name)=>({mint,name,group:'new',createdAt:1_800_000_000_000,firstSeenAt:1_800_000_000_000,detectedAt:1_800_000_000_000,raw:{}});
+ const h=harness({candidates:[mk('m1','TOLY RETWEETED 40k'),mk('m2','toly retweeted 40K!!'),mk('m3','Catecoin'),mk('m4','TOLY  RETWEETED 40k')]});
+ const c=await h.coordinator.start({maxTokens:10});await h.coordinator.alarm();
+ const d=await h.coordinator.detail(c.id);assert.deepEqual(d.tokens.map(t=>t.mint).sort(),['m1','m3']);
+ const s=await h.coordinator.status();assert.equal(s.campaign.skippedDuplicate,2);assert.equal(s.campaign.seenCount,4);
+});
 test('trained model: owner sets the active model; finished runs queue a model paper run',async()=>{
  const spec=JSON.stringify({format:'pump-model-v1',name:'model-v3',sha256:'abc123'});
  const h=harness({media:{'models/model-v3.json':spec}});
