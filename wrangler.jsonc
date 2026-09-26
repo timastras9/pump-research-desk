@@ -4,12 +4,75 @@
   "account_id": "0fc41c21a6be19f1c763c87e03a4ae0b",
   "main": "src/worker.ts",
   "compatibility_date": "2026-09-26",
-  "compatibility_flags": ["nodejs_compat"],
-  "assets": { "directory": "./public", "binding": "ASSETS", "run_worker_first": true, "html_handling": "none" },
-  "browser": { "binding": "BROWSER" },
-  "ai": { "binding": "AI" },
-  "durable_objects": { "bindings": [{ "name": "DESK", "class_name": "ResearchDesk" }] },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ResearchDesk"] }],
-  "triggers": { "crons": ["* * * * *"] },
-  "observability": { "enabled": true, "traces": { "enabled": true, "head_sampling_rate": 0.01 } }
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": true,
+    "html_handling": "none"
+  },
+  "browser": {
+    "binding": "BROWSER"
+  },
+  "ai": {
+    "binding": "AI"
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "DESK",
+        "class_name": "ResearchDesk"
+      },
+      {
+        "name": "STUDIES",
+        "class_name": "StudyCoordinator"
+      },
+      {
+        "name": "RECORDERS",
+        "class_name": "StudyRecorder"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "ResearchDesk"
+      ]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": [
+        "StudyCoordinator",
+        "StudyRecorder"
+      ]
+    }
+  ],
+  "triggers": {
+    "crons": [
+      "* * * * *"
+    ]
+  },
+  "observability": {
+    "enabled": true,
+    "traces": {
+      "enabled": true,
+      "head_sampling_rate": 0.01
+    }
+  },
+  "d1_databases": [
+    {
+      "binding": "CRYPTO_STUDY",
+      "database_name": "crypto-study",
+      "database_id": "4228f1ee-1769-49c0-bf11-962ecbd3ae34"
+    }
+  ],
+  "r2_buckets": [
+    {
+      "bucket_name": "crypto-study-media",
+      "binding": "CRYPTO_MEDIA"
+    }
+  ]
 }
