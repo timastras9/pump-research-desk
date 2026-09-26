@@ -73,8 +73,13 @@ def simulate(t, policy, detail=False):
     e = t.get('entry')
     if e is None: return None
     p = t['p']; end = min(720, e + HOLD_S)
-    for s in range(e + 1, end):
-        if policy(t, e, s):
+    if hasattr(policy, 'batch'):   # score every second of this token in one model call (same decisions, much faster)
+        secs = np.arange(e + 1, end); hits = np.nonzero(policy.batch(t, e, secs))[0]
+        sell_at = [int(secs[hits[0]])] if len(hits) else []
+    else:
+        sell_at = None
+    for s in (sell_at if sell_at is not None else range(e + 1, end)):
+        if sell_at is not None or policy(t, e, s):
             f = min(s + LATENCY_S, end)   # realistic fill: price LATENCY_S seconds after the decision
             return (s, f, net(p[e], p[f])) if detail else net(p[e], p[f])
     return (end, end, net(p[e], p[end])) if detail else net(p[e], p[end])
@@ -138,14 +143,22 @@ def main():
     print(json.dumps(cfg), flush=True)
     model = GradientBoostingClassifier(n_estimators=150, max_depth=3, learning_rate=0.1, subsample=0.8, random_state=0).fit(Xtr, ytr)
     print(f'imitation model trained in {time.time() - t0:.0f}s', flush=True)
+    class Batched:
+        def __init__(self, fn): self.fn = fn
+        def __call__(self, t, e, s): return bool(self.fn(t, e, np.array([s]))[0])
+        def batch(self, t, e, secs): return self.fn(t, e, secs)
+    def feats(t, e, secs): return np.array([features(t, e, int(x)) for x in secs], dtype=np.float32)
     Xr, sell_r, next_r, final_r = rl_transitions(tr, a.step)
     q_model = fit_q_hold(Xr, sell_r, next_r, final_r)
     print(f'RL (fitted Q-iteration) trained in {time.time() - t0:.0f}s on {len(Xr)} transitions', flush=True)
     def rl_policy(margin):
         # sell when selling now (after latency and costs) is worth at least the learned value of holding, minus a margin
-        return lambda t, e, s: net(t['p'][e], t['p'][min(s + LATENCY_S, min(720, e + HOLD_S))]) >= float(q_model.predict(np.array([features(t, e, s)], dtype=np.float32))[0]) - margin
+        def fn(t, e, secs):
+            end = min(720, e + HOLD_S); sell_now = net(t['p'][e], t['p'][np.minimum(secs + LATENCY_S, end)])
+            return sell_now >= q_model.predict(feats(t, e, secs)) - margin
+        return Batched(fn)
     def model_policy(th):
-        return lambda t, e, s: model.predict_proba(np.array([features(t, e, s)], dtype=np.float32))[0, 1] >= th or (t['p'][s] / t['p'][e] - 1) <= -0.25
+        return Batched(lambda t, e, secs: (model.predict_proba(feats(t, e, secs))[:, 1] >= th) | (t['p'][secs] / t['p'][e] - 1 <= -0.25))
     # choose the sell threshold on validation only (average P&L per trade)
     val_scores = {th: summary([simulate(t, model_policy(th)) for t in va]) for th in (0.5, 0.6, 0.7, 0.8, 0.9)}
     th = max(val_scores, key=lambda k: val_scores[k].get('avg_pct', -1e9))

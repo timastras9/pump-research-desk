@@ -3,8 +3,12 @@
 // v2 (backtest on 100 recorded tokens): flat check at 60s and a -25% stop cut the two losing exits of v1.
 // v3: sell part of the position on the early pump and let the rest run ('sold too early' left +126% on average).
 export const PAPER_RULES={version:'paper-v3',sizeUsd:2,costPerSide:0.0325,deadAfterMs:30000,noChaseAbovePct:30,
-  earlyWindowMs:60000,earlyTakePct:30,partialTakeFraction:0.5,secondTakePct:0,checkAtMs:60000,checkMinPct:5,trailArmPct:20,trailPct:30,stopPct:25,maxHoldMs:600000};
+  earlyWindowMs:60000,earlyTakePct:30,partialTakeFraction:0.5,secondTakePct:0,checkAtMs:60000,checkMinPct:5,trailArmPct:20,trailPct:30,stopPct:25,maxHoldMs:600000,
+  // Profit-scaled trailing stop: [gain from entry %, trail % below the high]. Wider early so runners survive pullbacks, tight once the gain is huge.
+  trailTiers:[] as [number,number][]};
 export type PaperRules=typeof PAPER_RULES;
+// Trail below the high that applies at this peak gain: the tier with the highest gain threshold reached, else trailPct.
+export function trailFor(R:PaperRules,highGainPct:number){let t=R.trailPct;for(const [gain,trail] of [...(R.trailTiers??[])].sort((a,b)=>a[0]-b[0]))if(highGainPct>=gain)t=trail;return t;}
 export type PaperTrade={version:string;status:'skipped'|'open'|'closed';skipReason?:string;entryAt?:number;entryPrice?:number;
   exitAt?:number;exitPrice?:number;exitReason?:string;partialAt?:number;partialPrice?:number;partialFraction?:number;highPrice?:number;holdMs?:number;pnlPct?:number;pnlUsd?:number};
 type Sample={time:number;priceUsd:number|null};
@@ -13,6 +17,8 @@ export const TUNABLE={partialTakeFraction:[0.1,1],secondTakePct:[0,500],earlyTak
 export function validRules(input:unknown):PaperRules{
   const r={...PAPER_RULES};if(!input||typeof input!=='object')return r;
   for(const [k,[lo,hi]] of Object.entries(TUNABLE)){const v=(input as Record<string,unknown>)[k];if(v===undefined)continue;if(typeof v!=='number'||!Number.isFinite(v)||v<lo||v>hi)throw Error(`Paper rule ${k} must be between ${lo} and ${hi}.`);(r as Record<string,unknown>)[k]=v;}
+  const tiers=(input as {trailTiers?:unknown}).trailTiers;
+  if(tiers!==undefined){if(!Array.isArray(tiers)||tiers.length>6||!tiers.every(t=>Array.isArray(t)&&t.length===2&&t.every(x=>typeof x==='number'&&Number.isFinite(x))&&t[0]>=0&&t[0]<=100000&&t[1]>=3&&t[1]<=90))throw Error('trailTiers must be up to 6 [gain %, trail %] pairs with trail between 3 and 90.');r.trailTiers=tiers as [number,number][];}
   const version=(input as {version?:unknown}).version;if(typeof version==='string'&&/^[a-z0-9.-]{1,40}$/.test(version))r.version=version;
   return r;
 }
@@ -46,7 +52,8 @@ export function paperTrade(samples:Sample[],opts:{skip?:string|null;stillRecordi
       const p=fill(j);trade={...trade,partialAt:p.time,partialPrice:p.priceUsd,partialFraction:f};checked=true;continue;   // the rest rides; no flat check after a pump
     }
     if(!checked&&el>=R.checkAtMs){checked=true;if(high<e.priceUsd*(1+R.checkMinPct/100))return close(R,trade,e,fill(j),`${R.checkAtMs/1000}s check: never +${R.checkMinPct}%`,high);}
-    if(high>=e.priceUsd*(1+R.trailArmPct/100)&&s.priceUsd<=high*(1-R.trailPct/100))return close(R,trade,e,fill(j),`trailing stop -${R.trailPct}% from high`,high);
+    const trail=trailFor(R,(high/e.priceUsd-1)*100);
+    if(high>=e.priceUsd*(1+R.trailArmPct/100)&&s.priceUsd<=high*(1-trail/100))return close(R,trade,e,fill(j),`trailing stop -${trail}% from high`,high);
     if(el>=R.maxHoldMs)return close(R,trade,e,fill(j),`${R.maxHoldMs/60000}-min time exit`,high);
   }
   return close(R,trade,e,v.at(-1)!,opts.stillRecording?'open (marked to market)':'recording ended',high,opts.stillRecording?'open':'closed');
