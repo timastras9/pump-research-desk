@@ -1,10 +1,12 @@
 import puppeteer, {type Page} from '@cloudflare/puppeteer';
 import { MODEL, PROMPT_VERSION, prompts, freshLaunch, numeric, usdPrice, validatePicks, visionResult, compareExits, type Candidate, type Signal } from './research-model';
 const boundedBrowser=(env:Env)=>({fetch:(input:RequestInfo|URL,init?:RequestInit)=>env.BROWSER.fetch(input,init?.method==='POST'?{...init,signal:AbortSignal.timeout(20000)}:init)});
+// Enforced structure keeps vision replies to a few short fields (Workers AI JSON mode).
+const VISION_SCHEMA={name:'vision',schema:{type:'object',properties:{chartVisible:{type:'boolean'},axis:{type:'string',enum:['price','market-cap','unknown']},timeframe:{type:'string',maxLength:20},direction:{type:'string',enum:['up','down','flat','unknown']},blocked:{type:'boolean'},evidence:{type:'string',maxLength:100}},required:['chartVisible','axis','timeframe','direction','blocked','evidence'],additionalProperties:false}};
 const sleep=(ms:number)=>new Promise(resolve=>setTimeout(resolve,ms));
-export async function kimi(env:Env,system:string,input:string,image?:string,max=600,onUsage?:(usage:unknown)=>void) {
+export async function kimi(env:Env,system:string,input:string,image?:string,max=600,onUsage?:(usage:unknown)=>void,schema?:{name:string;schema:object}) {
   const model:string=MODEL;
-  const result=await env.AI.run(model,{messages:[{role:'system',content:system},{role:'user',content:image?[{type:'text',text:input},{type:'image_url',image_url:{url:`data:image/jpeg;base64,${image}`}}]:input}],max_completion_tokens:max,reasoning_effort:'none',temperature:0},{signal:AbortSignal.timeout(20000)}).catch(error=>{onUsage?.(null);throw error;});
+  const result=await env.AI.run(model,{messages:[{role:'system',content:system},{role:'user',content:image?[{type:'text',text:input},{type:'image_url',image_url:{url:`data:image/jpeg;base64,${image}`}}]:input}],max_completion_tokens:max,reasoning_effort:'none',temperature:0,...(schema?{response_format:{type:'json_schema',json_schema:{name:schema.name,strict:true,schema:schema.schema}}}:{})},{signal:AbortSignal.timeout(20000)}).catch(error=>{onUsage?.(null);throw error;});
   onUsage?.(result.usage??null);
   const text=(Array.isArray(result.choices)?result.choices[0]?.message?.content:null)??result.response;
   if(typeof text!=='string'||!text.trim()) throw Error('No readable model output.');
@@ -91,7 +93,7 @@ export async function observe(env:Env,mint:string,id:string,seconds:number,assum
   const browserOpenedAt=Date.now();const usage:unknown[]=[];
   const {browser,reused:sessionReused}=await acquireObservationBrowser(env,options.sessionId);let retainedSessionId:string|null=null;let timedOut=false;
   const captureTimeout=setTimeout(()=>{timedOut=true;void browser.close().catch(()=>{});},Math.max(10000,Math.min(seconds*1000+45000,(options.endAt??Infinity)-Date.now()+5000)));
-  const samples:Omit<Frame,'image'|'text'>[]=[];const chatSnapshots:ChatSnapshot[]=[];let lastChatReadAt=0;
+  const samples:Omit<Frame,'image'|'text'>[]=[];const chatSnapshots:ChatSnapshot[]=[];let lastChatReadAt=0,lastBannerCheckAt=0;
   const reviews:{frame:number;startedAt:number;finishedAt:number;text:string;ok:boolean;vision?:ReturnType<typeof visionResult>}[]=[];
   let active:Promise<void>|null=null,attempts=0,skipped=0,lastAnalysis=0,startedAt=Date.now(),failure:string|null=null;
   try {
@@ -118,11 +120,13 @@ export async function observe(env:Env,mint:string,id:string,seconds:number,assum
       const priceReadAt=Date.now();const frame:Frame={index:samples.length,captureStartedAt,capturedAt,screenshotMs:capturedAt-captureStartedAt,image,...data,priceReadAt,priceUsd:usdPrice(data.priceRaw,data.priceMode)};
       const {image:_image,text:_text,...sample}=frame;samples.push(sample);
       await saveFrame(frame);
+      // The cookie banner can appear after load and cover the chart; decline non-essential cookies when it does.
+      if(captureStartedAt-lastBannerCheckAt>=10000){lastBannerCheckAt=captureStartedAt;await clickLabel(page,'Reject all').catch(()=>{});}
       if(options.captureChat&&captureStartedAt-lastChatReadAt>=5000){lastChatReadAt=captureStartedAt;const snapshot=await readTokenChat(page);chatSnapshots.push(snapshot);await options.onChat?.(snapshot);}
       if(!active && attempts<(options.maxVision??6) && captureStartedAt-lastAnalysis>=5000){
         attempts++;lastAnalysis=captureStartedAt;const aiStarted=Date.now();
         active=(async()=>{try {
-          const text=await kimi(env,prompts.vision,`Frame ${frame.index}, capturedAt ${capturedAt}. Analyze only this screenshot.`,image,300,u=>usage.push(u));
+          const text=await kimi(env,prompts.vision,`Frame ${frame.index}.`,image,120,u=>usage.push(u),VISION_SCHEMA);
           const vision=visionResult(text);reviews.push({frame:frame.index,startedAt:aiStarted,finishedAt:Date.now(),text,ok:true,vision});
         }catch{reviews.push({frame:frame.index,startedAt:aiStarted,finishedAt:Date.now(),text:'Vision unavailable or invalid; no signal inferred.',ok:false});}})().finally(()=>{active=null;});
       }else skipped++;

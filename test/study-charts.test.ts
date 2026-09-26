@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {exitMetrics,priceSeries,outcomeLabel,COST_PER_SIDE} from '../src/study-analysis';
 // @ts-ignore browser module without types
-import {overviewHtml,tokenChartHtml,pathChart} from '../public/study-charts.js';
+import {overviewHtml,tokenChartHtml,pathChart,watchingHtml} from '../public/study-charts.js';
 
 const s=(pairs:[number,number][])=>pairs.map(([t,p])=>({time:t*1000,priceUsd:p}));
 
@@ -35,4 +35,13 @@ test('charts escape token names and group every finished token',()=>{
  assert.match(tokenChartHtml({createdAt:0},[{samples:[{priceReadAt:1000,priceUsd:1}]}]),/Not enough prices/);
  const chart=tokenChartHtml({createdAt:0,exits:{peakToDrop20Ms:2000}},[{samples:[{priceReadAt:1000,priceUsd:1},{priceReadAt:5000,priceUsd:2},{priceReadAt:7000,priceUsd:1.5}]}]);
  assert.equal((chart.match(/<circle/g)||[]).length,4);assert.match(chart,/Peak → −20%: <strong>2\.0s/);
+});
+
+test('watching cards show only live tokens with live change, peak and escaped names',()=>{
+ const now=1_000_000;
+ const live={id:'a',campaignId:'c',name:'<img src=x>',mint:'m',status:'watching',createdAt:now-60000,startedAt:now-50000,endsAt:now+550000,frameCount:90,firstPriceUsd:1,lastPriceUsd:1.25,peakPriceUsd:1.5,peakPriceAt:now-20000,lastFrameAt:now-1000,latestFrame:{key:'k1',capturedAt:now-1000},launch:{launchTool:'axiom',mayhem:false}};
+ const html=watchingHtml([live,{...live,id:'b',status:'finished'}],(k:string)=>'/media?key='+k,now);
+ assert.equal((html.match(/class="live-token watch/g)||[]).length,1);
+ assert.ok(!html.includes('<img src=x>'));assert.match(html,/\+25\.0%/);assert.match(html,/peak \+50\.0% at 40s/);assert.match(html,/9m 10s left/);assert.match(html,/\/media\?key=k1/);assert.match(html,/ up/);
+ assert.match(watchingHtml([],()=>null,now),/No tokens are being recorded/);
 });
