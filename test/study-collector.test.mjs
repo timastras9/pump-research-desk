@@ -18,6 +18,7 @@ function harness(options={}){
   const db={prepare(query){let args=[];const table=Object.keys(tables).find(t=>query.includes(t));return {bind(...values){args=values;return this;},async run(){tables[table].set(args[0],{data:args.at(-1),args});if(options.dbHook)await options.dbHook(query,args);},async first(){return tables[table].get(args[0])??null;},async all(){let rows=[...tables[table].values()];if(query.includes('campaign_id')||query.includes('token_id'))rows=rows.filter(r=>r.args[1]===args[0]);return {results:rows};}};}};
   const media=new Map(Object.entries(options.media??{}));
   const env={CRYPTO_STUDY:db,CRYPTO_MEDIA:{put:async(k,v)=>{media.set(k,v);},get:async k=>media.has(k)?{text:async()=>media.get(k)}:null},AI:{run:async()=>({})}};
+  const exports_=globalThis.__ragExports=[];
   class Clock extends Date{static now(){return now;}}
   const candidate={mint:'123456789ABCDEFGHJKLMNPQRSTUVWXYZabcd',name:'test',group:'new',createdAt:now,detectedAt:now,firstSeenAt:now,raw:{},marketCapUsd:null,athUsd:null,volume24hUsd:null,traders:null,transactions:null};
   globalThis.fetch=async()=>({ok:false,json:async()=>({})});
@@ -32,6 +33,7 @@ function harness(options={}){
     './model':{Model:class{constructor(spec){this.spec=spec;}}},
     './model-runner':{stepJob:async()=>'finished',newJob:(campaignId,model,tokens,now)=>({campaignId,model,dueAt:now,queuedAt:now,done:0,total:tokens.length,errors:[]}),d1Deps:()=>({}),MODEL_SCHEMA:[],runKey:(c,s)=>`runs/${c}/${s}.json`},
     './astra-review':{reviewRun:async()=>({review:{summary:'ok'}})},
+    './rag-export':{exportStudy:async(_db,_b,id)=>{exports_.push(id);return {study:id,tokens:0};}},
     './study-analysis':{reviewMistakes:async()=>({lessons:null,usage:{estimatedUsd:0},error:null}),compactStudyInput:x=>x,compactAggregateInput:x=>x,compareWinnersLosers:()=>({features:[]}),priceSeries:()=>[],exitMetrics:()=>({}),outcomeLabel:()=>'unscored',launchInfoFromCoin:()=>null,isTerminalLaunch:()=>false,COLLECTIVE_PROMPT:'collective',summarizeSamples:()=>({classification:'flat'}),analyzeStudy:async()=>({analysis:{},usage:{estimatedUsd:0},error:null}),aggregateStudies:rows=>({all:{count:rows.length}}),usageFromResponse:()=>({estimatedUsd:0})},
   };
   const source=ts.transpileModule(readFileSync(new URL('../src/study-collector.ts',import.meta.url),'utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText;
@@ -45,7 +47,7 @@ test('capacity checked and default campaign can admit 100 with twenty isolated r
  const h=harness();const c=await h.coordinator.start();assert.equal(c.maxTokens,100);assert.equal(c.concurrency,20);await assert.rejects(h.coordinator.start());await h.coordinator.stop();const limited=harness({capacity:4});assert.equal((await limited.coordinator.start()).concurrency,3);await assert.rejects(harness({capacity:1}).coordinator.start());
 });
 test('discovery only admits; child alarms persist evidence and finish independently',async()=>{
- const h=harness();const c=await h.coordinator.start({maxTokens:1});await h.coordinator.alarm();assert.equal(h.captures(),0);assert.equal(h.recorders.size,1);await h.runChildren();assert.equal(h.captures(),1);assert.equal(h.tables.study_chunks.size,1);h.advance(600001);await h.runChildren();await h.coordinator.alarm();const d=await h.coordinator.detail(c.id);assert.equal(d.tokens[0].status,'finished');assert.equal(d.campaign.status,'finished');
+ const h=harness();const c=await h.coordinator.start({maxTokens:1});await h.coordinator.alarm();assert.equal(h.captures(),0);assert.equal(h.recorders.size,1);await h.runChildren();assert.equal(h.captures(),1);assert.equal(h.tables.study_chunks.size,1);h.advance(600001);await h.runChildren();await h.coordinator.alarm();const d=await h.coordinator.detail(c.id);assert.equal(d.tokens[0].status,'finished');assert.equal(d.campaign.status,'finished');assert.deepEqual(globalThis.__ragExports,[c.id],'finished study is exported to R2 for RAG');
 });
 test('a stalled token does not block discovery or another token recorder',async()=>{
  let release,entered;const gate=new Promise(r=>release=r),reached=new Promise(r=>entered=r);

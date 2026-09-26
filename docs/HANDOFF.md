@@ -51,6 +51,9 @@ Read this first in a new session. Then check `~/.claude/projects/-Users-tim-Docu
 | Copycat filter: record each launch name once per study | caf34f2 |
 | Layout guard test | be33ca9 |
 | Final numbers panel at the top of each study (next step 3, built) | a32bab0 |
+| RAG export D1 → R2 `rag/` after every study + model run; Ask Astra tab (`/chat.html`, `/api/chat`); AI Search namespace binding, instance name in `AI_SEARCH_INSTANCE` | see git log |
+
+**RAG export already in R2 (no deploy needed):** `npx tsx scripts/rag-dump.ts` dumped all 5 studies / 460 tokens (467 files) to `crypto-study-media/rag/` on 2026-09-26. Re-run it any time; it overwrites only `rag/`.
 
 UI changes in that batch: frame status line gains "Paper: open +x%"; Watching-now cards gain one paper line; study notes gain "skipped as copycat names: N"; Model tab gains a "Seen" column. Nothing removed.
 

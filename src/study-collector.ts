@@ -6,6 +6,7 @@ import {fetchNewLaunches, LAUNCH_POLL_MS} from './launch-feed';
 import {paperTrade, summarizePaper, tunePaper, validRules, passesFilter, classifyTrade, mistakeSummary, PAPER_RULES, PAPER_FILTERS, type PaperTrade, type PaperRules, type TuneToken, type Mistake} from './paper-trader';
 import {freshLaunch, type Candidate} from './research-model';
 import {Model, type ModelSpec} from './model';
+import {exportStudy} from './rag-export';
 import {stepJob, newJob, d1Deps, runKey, MODEL_SCHEMA, type ModelJob, type ModelPointer, type RunToken, type RunFile} from './model-runner';
 import {reviewRun} from './astra-review';
 import {summarizeSamples, analyzeStudy, aggregateStudies, usageFromResponse, compactStudyInput, compactAggregateInput, reviewMistakes, compareWinnersLosers, priceSeries, exitMetrics, outcomeLabel, launchInfoFromCoin, isTerminalLaunch, COLLECTIVE_PROMPT, type LaunchInfo} from './study-analysis';
@@ -125,7 +126,8 @@ export class StudyCoordinator extends StudyStore{
     const o=await this.env.CRYPTO_MEDIA.get(runKey(job.campaignId,job.model.sha));if(!o)return;
     const review=await reviewRun(this.env.AI,JSON.parse(await o.text()) as RunFile);
     await this.env.CRYPTO_MEDIA.put(runKey(job.campaignId,job.model.sha).replace(/\.json$/,'.review.json'),JSON.stringify(review),{httpMetadata:{contentType:'application/json'}});
-    await this.env.CRYPTO_STUDY.prepare('UPDATE model_runs SET review=? WHERE campaign_id=? AND model_sha=?').bind(JSON.stringify(review),job.campaignId,job.model.sha).run();}
+    await this.env.CRYPTO_STUDY.prepare('UPDATE model_runs SET review=? WHERE campaign_id=? AND model_sha=?').bind(JSON.stringify(review),job.campaignId,job.model.sha).run();
+    await exportStudy(this.env.CRYPTO_STUDY,this.env.CRYPTO_MEDIA,job.campaignId).catch(()=>{});}
   async alarm(){const c=this.campaign();if(!c||c.status!=='running'){await this.modelStep();return;}await this.ctx.storage.setAlarm(Date.now()+90000);try{
       for(const pending of c.pending??[]){if(!this.isRunning(c.id))return;await this.saveToken(pending);await this.env.RECORDERS.getByName(pending.id).initialize(pending);}
       c.pending=[];await this.saveCampaign(c);
@@ -158,7 +160,7 @@ export class StudyCoordinator extends StudyStore{
       }
       if(!this.isRunning(c.id))return;
       const remaining=(await this.tokens(c)).filter(t=>t.status==='watching');
-      if(!remaining.length&&(Date.now()>=c.admissionEndsAt||c.tokens>=c.maxTokens)){await this.analyzeCampaign(c);if(!this.isRunning(c.id))return;c.status='finished';await this.saveCampaign(c);if(this.campaign()?.id===c.id)await this.ctx.storage.deleteAlarm();if(this.read<ModelPointer>('activeModel'))await this.queueModelRun(c.id).catch(()=>{});}
+      if(!remaining.length&&(Date.now()>=c.admissionEndsAt||c.tokens>=c.maxTokens)){await this.analyzeCampaign(c);if(!this.isRunning(c.id))return;c.status='finished';await this.saveCampaign(c);await exportStudy(this.env.CRYPTO_STUDY,this.env.CRYPTO_MEDIA,c.id).catch(()=>{});if(this.campaign()?.id===c.id)await this.ctx.storage.deleteAlarm();if(this.read<ModelPointer>('activeModel'))await this.queueModelRun(c.id).catch(()=>{});}
       else if(this.isRunning(c.id))await this.ctx.storage.setAlarm(Date.now()<c.admissionEndsAt?Math.max(Date.now()+250,c.lastScanAt+LAUNCH_POLL_MS):Date.now()+10000);   // fixed cadence from the poll start, not after the work
     }catch{if(this.isRunning(c.id)){c.errors.push('Discovery step failed; retained evidence and retry scheduled.');c.errors=c.errors.slice(-20);await this.saveCampaign(c);if(this.isRunning(c.id))await this.ctx.storage.setAlarm(Date.now()+10000);}}
   }

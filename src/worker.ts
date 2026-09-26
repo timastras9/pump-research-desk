@@ -2,6 +2,8 @@ export { StudyCoordinator, StudyRecorder } from './study-collector';
 import { observe, scanExplore, type Frame } from './observer';
 import { timingSafeEqual } from 'node:crypto';
 import { costs } from './research-model';
+import { askAstra, type ChatEnv, type ChatTurn } from './astra-chat';
+import { exportStudy } from './rag-export';
 import { DurableObject } from 'cloudflare:workers';
 import { buy, close, equity, event, initialState, processTick, rejectionReasons, validateRules, type DeskState } from './engine';
 import { discover, mintPattern, quotes } from './market';
@@ -241,6 +243,23 @@ async function route(request: Request, env: Env): Promise<Response> {
       if(path==='/api/studies/model-eval' && request.method==='POST'){const input=await body(request);if(typeof input.campaignId!=='string')return json({error:'campaignId is required.'},400);return json(await studies.queueModelRun(input.campaignId));}
       if(path==='/api/studies/stop' && request.method==='POST'){const input=await body(request);return json(await studies.stop(typeof input.id==='string'?input.id:undefined));}
       return json({error:'Study route not found.'},404);
+    }
+    // Ask Astra tab: questions over the RAG export; sync re-exports one study from D1 to R2 (rag/).
+    if (path === '/api/chat' && request.method === 'POST') {
+      const input = await body(request);
+      if (typeof input.question !== 'string' || !input.question.trim() || input.question.length > 4000) return json({ error: 'Ask a question (up to 4,000 characters).' }, 400);
+      const history = (Array.isArray(input.history) ? input.history : []).filter((t): t is ChatTurn => !!t && (t.role === 'user' || t.role === 'assistant') && typeof t.content === 'string');
+      return json(await askAstra(env as unknown as ChatEnv, input.question.trim(), history));
+    }
+    if (path === '/api/rag/studies' && request.method === 'GET') {
+      const rows = (await env.CRYPTO_STUDY.prepare('SELECT id, started_at FROM study_campaigns ORDER BY started_at DESC').all<{ id: string; started_at: number }>()).results;
+      const idx = await env.CRYPTO_MEDIA.get('rag/index.json');
+      return json({ studies: rows, index: idx ? await idx.json() : null, aiSearchInstance: (env as unknown as ChatEnv).AI_SEARCH_INSTANCE || null });
+    }
+    if (path === '/api/rag/sync' && request.method === 'POST') {
+      const input = await body(request);
+      if (typeof input.id !== 'string') return json({ error: 'id is required.' }, 400);
+      return json(await exportStudy(env.CRYPTO_STUDY, env.CRYPTO_MEDIA, input.id));
     }
     if (path === '/api/state' && request.method === 'GET') return json(await desk.snapshot());
     if (path === '/api/export' && request.method === 'GET') return json(await desk.snapshot(), 200, { 'Content-Disposition': 'attachment; filename="pump-research.json"' });

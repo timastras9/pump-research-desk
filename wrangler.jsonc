@@ -19,6 +19,17 @@
   "ai": {
     "binding": "AI"
   },
+  // Ask Astra tab: AI Search namespace binding. Set AI_SEARCH_INSTANCE to the instance name that indexes
+  // crypto-study-media under the prefix rag/ (empty = chat still works from rag/index.json, no document search).
+  "ai_search_namespaces": [
+    {
+      "binding": "AI_SEARCH",
+      "namespace": "default"
+    }
+  ],
+  "vars": {
+    "AI_SEARCH_INSTANCE": ""
+  },
   "durable_objects": {
     "bindings": [
       {

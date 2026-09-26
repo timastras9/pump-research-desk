@@ -15,3 +15,7 @@ dl{display:grid;grid-template-columns:1fr 1fr;gap:8px 25px;margin:0}dt{color:var
 .path-chart .axis-zero{stroke:#4a5d69}.path-chart .rule-change{stroke:#91a4af;stroke-dasharray:3 4}.path-chart .rule-label,.path-chart .bar-label{font-size:11px;fill:var(--muted)}.path-chart .direct-label{font-size:12px;fill:var(--text)}
 .c-filtered{color:#5fa83a}.c-all{color:#3f7fc0}
 @media(max-width:680px){.tabs a{padding:6px 8px;font-size:.8rem}}
+.chat-suggest{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0 14px}.chat-suggest button{font-size:.85rem}
+.chat-log{display:flex;flex-direction:column;gap:12px;margin-bottom:14px}.chat-turn{border:1px solid #2a3a45;border-radius:10px;padding:10px 14px}.chat-turn.user{background:#15232d}.chat-turn .label{margin:0 0 4px}
+.chat-text{white-space:pre-wrap;margin:0;line-height:1.5}.chat-form{display:flex;gap:10px;align-items:flex-end}.chat-form textarea{flex:1;min-width:0;resize:vertical}
+@media(max-width:680px){.chat-form{flex-direction:column;align-items:stretch}}
