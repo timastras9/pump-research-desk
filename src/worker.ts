@@ -1,3 +1,4 @@
+export { StudyCoordinator, StudyRecorder } from './study-collector';
 import { observe, scanExplore, type Frame } from './observer';
 import { timingSafeEqual } from 'node:crypto';
 import { costs } from './research-model';
@@ -214,6 +215,24 @@ async function route(request: Request, env: Env): Promise<Response> {
   if (path.startsWith('/api/')) {
     if (!access) return json({ error: 'Sign in to your research desk.' }, 401);
     if (path === '/api/logout' && request.method === 'POST') return json({ ok: true }, 200, { 'Set-Cookie': 'desk_session=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0' });
+    if(path.startsWith('/api/studies')) {
+      const studies=env.STUDIES.getByName('timastras9');
+      if(path==='/api/studies/media' && request.method==='GET') {
+        const key=url.searchParams.get('key')??'';
+        if(!key.startsWith('studies/') || key.includes('..') || key.length>300)return json({error:'Invalid evidence key.'},400);
+        const object=await env.CRYPTO_MEDIA.get(key);
+        if(!object)return json({error:'Evidence not found.'},404);
+        return new Response(object.body,{headers:{'Content-Type':object.httpMetadata?.contentType??'application/octet-stream'}});
+      }
+      if(path==='/api/studies' && request.method==='GET')return json({...await studies.list(),status:await studies.status()});
+      if(path==='/api/studies/status' && request.method==='GET')return json(await studies.status());
+      if(path==='/api/studies/token' && request.method==='GET')return json(await studies.token(url.searchParams.get('id')??''));
+      if(path==='/api/studies/flag' && request.method==='POST'){const input=await body(request);if(typeof input.id!=='string'||typeof input.excluded!=='boolean'||typeof input.reason!=='string')return json({error:'Invalid exclusion update.'},400);return json(await studies.flag(input.id,input.excluded,input.reason));}
+      if(path==='/api/studies/start' && request.method==='POST')return json(await studies.start(await body(request)));
+      if(path==='/api/studies/detail' && request.method==='GET')return json(await studies.detail(url.searchParams.get('id')??''));
+      if(path==='/api/studies/stop' && request.method==='POST'){const input=await body(request);return json(await studies.stop(typeof input.id==='string'?input.id:undefined));}
+      return json({error:'Study route not found.'},404);
+    }
     if (path === '/api/state' && request.method === 'GET') return json(await desk.snapshot());
     if (path === '/api/export' && request.method === 'GET') return json(await desk.snapshot(), 200, { 'Content-Disposition': 'attachment; filename="pump-research.json"' });
     if (path === '/api/discover' && request.method === 'GET') {
