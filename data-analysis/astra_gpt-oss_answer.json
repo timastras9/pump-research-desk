@@ -1,0 +1,51 @@
+{
+ "patterns": [
+  {
+   "pattern": "Low max rise before entry \u2192 loser",
+   "evidence": "max_rise_so_far_pct median 5.6\u202f% for losers vs 18.4\u202f% for winners; mean 5.59\u202f% vs 75.96\u202f% (auc\u202f0.412)"
+  },
+  {
+   "pattern": "Low active share and short active time \u2192 loser",
+   "evidence": "active_share median 0.625 vs 0.857 (loser\u202fmean\u202f0.594, winner\u202fmean\u202f0.747); active_secs median 5\u202fs vs 6\u202fs (loser\u202fmean\u202f4.70, winner\u202fmean\u202f5.57)"
+  },
+  {
+   "pattern": "Low recent volume surge \u2192 loser",
+   "evidence": "volume_last5_vs_before median 0.332 vs 0.357 (loser\u202fmean\u202f10.38, winner\u202fmean\u202f2.06; auc\u202f0.482)"
+  },
+  {
+   "pattern": "Smaller price swing (volatility) \u2192 loser",
+   "evidence": "volatility_pct median 5.41\u202f% vs 14.57\u202f% (loser\u202fmean\u202f10.19, winner\u202fmean\u202f16.48; auc\u202f0.328)"
+  },
+  {
+   "pattern": "Less drop from recent high \u2192 loser",
+   "evidence": "drop_from_high_pct median \u20131.97\u202f% vs \u201310.47\u202f% (loser\u202fmean\u202f\u201311.48, winner\u202fmean\u202f\u201319.29; auc\u202f0.601)"
+  }
+ ],
+ "dont_buy_rules": [
+  {
+   "name": "low_max_rise_and_low_activity",
+   "expr": "max_rise_so_far_pct < 8 and active_share < 0.7 and active_secs < 5",
+   "why": "Losers have median max rise\u202f\u2248\u202f5\u202f% (vs\u202f\u2248\u202f18\u202f% for winners) and lower activity (active_share\u202f\u2248\u202f0.63, active_secs\u202f\u2248\u202f5\u202fs). This rule would have avoided 355 losers (\u2248\u202f47\u202f% of all losers) while only discarding 310 winners (\u2248\u202f24\u202f% of winners), saving 2\u202f473\u202fpnl\u2011pts at the cost of 25\u202f586\u202fpnl\u2011pts."
+  },
+  {
+   "name": "low_vol_and_low_volume_spike",
+   "expr": "volatility_pct < 12 and volume_last5_vs_before < 0.35",
+   "why": "Losers are less volatile (median\u202f\u2248\u202f5\u202f% vs\u202f\u2248\u202f14\u202f% for winners) and have a smaller recent volume surge (median\u202f\u2248\u202f0.33 vs\u202f\u2248\u202f0.36). This rule would have avoided 91 losers (\u2248\u202f12\u202f% of losers) while only losing 30 winners (\u2248\u202f2\u202f%); it saved 572\u202fpnl\u2011pts but gave up 1\u202f548\u202fpnl\u2011pts."
+  },
+  {
+   "name": "short_time_since_launch_low_volume",
+   "expr": "secs_since_launch > 12 and volume_log < 5.5",
+   "why": "Tokens launched longer ago with low total volume tend to be losers (91 avoided, 30 winners lost). This rule captures a small but clean slice of the loss space."
+  }
+ ],
+ "wait_advice": "Wait about 20\u202fseconds after launch before sending the buy order. At a 20\u202fs delay the loser share is 47\u202f% and the average best P&L is \u2248\u202f77\u202fpts (higher than at 30\u202fs or 60\u202fs). Longer waits increase the loser share and reduce average P&L.",
+ "new_kpis_to_collect": [
+  "max_rise_so_far_pct",
+  "active_share",
+  "active_secs",
+  "volume_last5_vs_before",
+  "volatility_pct",
+  "drop_from_high_pct"
+ ],
+ "caveat": "These patterns and rules are derived from a single day of launch data (\u2248\u202f2\u202f500 tokens). Market dynamics, launch formats, and token\u2011specific events can differ, so a rule that blocks many losers may also filter out a sizable fraction of winners. Continuous re\u2011evaluation on fresh data is required before deploying any rule in production."
+}
