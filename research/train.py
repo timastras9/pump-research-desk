@@ -28,6 +28,7 @@ CRASH_PCT, CRASH_H = 20, 10             # SELL-side crash: price falls 20%+ belo
 ENTRY_CRASH_PCT, ENTRY_CRASH_H = 30, 10 # BUY-side crash: price falls 30%+ below entry within 10 s of entry
 MAX_BIG_LOSS_SHARE = 0.10               # Tim: no 30% losses. Validation choices must keep trades at <= -30% net to 10% or fewer
 EARLY_S = 5                             # Tim: below entry within 5 s -> get out (55.7% of those crash 30% within 30 s)
+RIDE_ARM = 0.10                         # ride mode starts once the position has been up 10% (past the ~6.7% round-trip cost)
 
 def crash_label(price, t, end, pct=CRASH_PCT, h=CRASH_H) -> float:
     """1 if, after deciding at t, the price falls pct% below price[t] before t + latency + h. Uses the future: label only."""
@@ -37,6 +38,19 @@ def crash_label(price, t, end, pct=CRASH_PCT, h=CRASH_H) -> float:
 def entry_crash_label(price, e, end, pct=ENTRY_CRASH_PCT, h=ENTRY_CRASH_H) -> float:
     w = price[e + 1:min(e + h, end) + 1]
     return float(len(w) > 0 and w.min() <= price[e] * (1 - pct / 100))
+
+def guard_decision(price, e, t, early, stop, crash_p, th_c, ride=None) -> str:
+    """Loss guard + ride mode around a base seller. Returns 'sell', 'hold' or 'base' (let the base seller decide).
+    crash_p is a zero-argument function giving the crash probability at t (only called when the crash check is on)."""
+    r = price[t] / price[e] - 1
+    if early and t - e <= EARLY_S and r < 0: return 'sell'                  # below entry in the first 5 s: out
+    if r <= -stop: return 'sell'                                            # tight stop: the fill lands ~7-10 pts lower after 2 s
+    if th_c <= 1 and crash_p() >= th_c: return 'sell'                       # crash predicted: out before it
+    if ride is not None:
+        hi = price[e:t + 1].max()
+        if hi / price[e] - 1 >= RIDE_ARM:                                   # Tim: hold on while it climbs
+            return 'sell' if price[t] <= hi * (1 - ride) else 'hold'        # out only on a real drop from the high
+    return 'base'
 
 def FRACTION(votes, members):
     """Share of ensemble members voting sell -> HOLD / SELL 25% / 50% / 100% of the remaining position."""
@@ -283,18 +297,16 @@ def main():
     val_sell = {k: round(total(run(va_eps, allbuy, p)) / max(1, len(va_eps)), 2) for k, p in sellers.items()}
 
     # ---------- GUARDED sellers (loss fix): early exit, crash model, delay-aware stop wrapped around each base seller ----------
-    def guarded(base, early, stop, th_c):
+    def guarded(base, early, stop, th_c, ride=None):
         def pol(ep, e, t, held, trd):
-            r = ep.price[t] / ep.price[e] - 1
-            if early and t - e <= EARLY_S and r < 0: return held           # below entry in the first 5 s: out
-            if r <= -stop: return held                                     # tight stop: the fill lands ~7-10 pts lower after 2 s
-            if th_c <= 1 and batch('crash', ep, e)[t - e - 1] >= th_c: return held   # crash predicted: out before it
-            return base(ep, e, t, held, trd)
+            g = guard_decision(ep.price, e, t, early, stop, lambda: batch('crash', ep, e)[t - e - 1], th_c, ride)
+            return held if g == 'sell' else 0.0 if g == 'hold' else base(ep, e, t, held, trd)
         return pol
     def utility(trades):
         """(meets Tim's loss cap, total net P&L). Candidates that meet the cap always beat those that don't."""
         big = big_loss_share(trades); return (big <= MAX_BIG_LOSS_SHARE, total(trades) if big <= MAX_BIG_LOSS_SHARE else -big)
-    guard_grid = [(b, early, stop, th_c) for b in sellers for early in (False, True) for stop in (0.05, 0.10, 0.15, 0.25) for th_c in (0.5, 0.6, 0.7, 0.8, 9)]
+    guard_grid = [(b, early, stop, th_c, ride) for b in sellers for early in (False, True) for stop in (0.05, 0.10, 0.15, 0.25)
+                  for th_c in (0.5, 0.6, 0.7, 0.8, 9) for ride in (None, 0.05, 0.10, 0.20)]
     guard_val = {g: utility(run(va_eps, allbuy, guarded(sellers[g[0]], *g[1:]))) for g in guard_grid}
     best_guard = max(guard_val, key=guard_val.get)
     sellers['guarded'] = guarded(sellers[best_guard[0]], *best_guard[1:])
@@ -311,6 +323,7 @@ def main():
     best_buy = max(buy_th, key=lambda k: utility(run(va_eps, make_gate(k, *buy_th[k]), sellers[best_seller])))
     choices = {'stop_threshold': th_stop, 'rl_partial_margin': m_part, 'rl_all_margin': m_all, 'val_pnl_per_launch_by_seller': val_sell,
                'guard': {'base': best_guard[0], 'early_exit_5s': best_guard[1], 'stop_pct': best_guard[2] * 100, 'crash_threshold': None if best_guard[3] > 1 else best_guard[3],
+                         'ride_trail_pct': None if best_guard[4] is None else best_guard[4] * 100, 'ride_arm_pct': RIDE_ARM * 100,
                          'meets_loss_cap_on_val': bool(guard_val[best_guard][0])},
                'best_seller': best_seller, 'buy_thresholds': {k: {'prob': v[0], 'entry_crash': None if v[1] > 1 else v[1]} for k, v in buy_th.items()}, 'best_buy': best_buy,
                'max_big_loss_share': MAX_BIG_LOSS_SHARE}

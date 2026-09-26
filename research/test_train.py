@@ -44,6 +44,21 @@ class TrainHelpersTest(unittest.TestCase):
         self.assertEqual(T.entry_crash_label(p, 0, 30), 1.0); self.assertEqual(T.entry_crash_label(p, 1, 30), 1.0)
         self.assertEqual(T.entry_crash_label(p, 0, 30, h=9), 0.0)
 
+    def test_guard_rides_the_climb_and_exits_on_drop_from_high(self):
+        p = np.array([1.0, 1.05, 1.2, 1.5, 2.0, 1.9, 1.75, 1.6])
+        g = lambda t, ride=0.10, th_c=9, cp=0.0: T.guard_decision(p, 0, t, True, 0.05, lambda: cp, th_c, ride)
+        self.assertEqual(g(1), 'base')                     # +5%: not armed yet, base seller decides
+        self.assertEqual([g(t) for t in (2, 3, 4, 5)], ['hold'] * 4)   # climbing or within 10% of the 2.0 high: hold
+        self.assertEqual(g(6), 'sell')                     # 1.75 is 12.5% below the high
+        self.assertEqual(g(3, th_c=0.5, cp=0.9), 'sell')   # a predicted crash still exits during the climb
+        self.assertEqual(g(3, ride=None), 'base')          # ride off: base seller decides
+
+    def test_guard_loss_protection_comes_first(self):
+        p = np.array([1.0, 0.99, 1.3, 0.94])
+        self.assertEqual(T.guard_decision(p, 0, 1, True, 0.05, lambda: 0, 9, 0.1), 'sell')    # below entry inside 5 s
+        self.assertEqual(T.guard_decision(p, 0, 1, False, 0.05, lambda: 0, 9, 0.1), 'base')   # early rule off
+        self.assertEqual(T.guard_decision(p, 0, 3, False, 0.05, lambda: 0, 9, None), 'sell')  # -6% hits the 5% stop
+
     def test_buy_report(self):
         r = T.buy_report([1, 1, 0, 0], [1, 0, 1, 0])
         self.assertEqual((r['coverage'], r['winner_retention'], r['loser_rejection'], r['precision']), (0.5, 0.5, 0.5, 0.5))
