@@ -127,6 +127,14 @@ export function guardDecision(price: number[], e: number, t: number, g: ModelSpe
   }
   return 'base';
 }
+/** Plain-language reason for a guard 'sell' (same order of checks as guardDecision). */
+export function guardReason(price: number[], e: number, t: number, g: ModelSpec['guard'], crashP: () => number): string {
+  const r = price[t] / price[e] - 1;
+  if (g.early_exit_5s && t - e <= g.early_s && r < 0) return `below entry within ${g.early_s} s`;
+  if (r <= -g.stop_pct / 100) return `stop -${g.stop_pct}%`;
+  if (g.crash_threshold != null && crashP() >= g.crash_threshold) return 'crash predicted';
+  return `dropped ${g.ride_trail_pct}% from high`;
+}
 export function simulate(price: number[], eng: ModelSpec['engine'], policy: Policy, d: number): { entryT: number; fills: Fill[] } {
   const e = d + eng.latency_s, end = Math.min(eng.window_s, e + eng.hold_s), fills: Fill[] = [];
   let held = 1, pendingUntil = -1;
@@ -168,11 +176,14 @@ export class Model {
     const x = [...this.row(l, t), (p[t] / p[e] - 1) * 100, (hi / p[e] - 1) * 100, t - e];
     return sigmoid(mlpForward(this.spec.crash.layers, scale(this.spec.crash.scaler, x))[0]);
   }
-  seller(l: Launch): Policy {
-    const base = rulesV3(l.price, this.spec.rules_v3);
+  /** The guarded seller. If `reasons` is given, records why each sell decision was made (keyed by decision second). */
+  seller(l: Launch, reasons?: Map<number, string>): Policy {
+    const base = rulesV3(l.price, this.spec.rules_v3), g = this.spec.guard;
     return (e, t, held, fills) => {
-      const g = guardDecision(l.price, e, t, this.spec.guard, () => this.crashProb(l, e, t));
-      return g === 'sell' ? held : g === 'hold' ? 0 : base(e, t, held, fills);
+      const dec = guardDecision(l.price, e, t, g, () => this.crashProb(l, e, t));
+      const out = dec === 'sell' ? held : dec === 'hold' ? 0 : base(e, t, held, fills);
+      if (reasons && out > 1e-9) reasons.set(t, dec === 'sell' ? guardReason(l.price, e, t, g, () => this.crashProb(l, e, t)) : 'rules v3');
+      return out;
     };
   }
   trade(l: Launch): ModelTrade {

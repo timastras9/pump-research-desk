@@ -12,7 +12,7 @@ Training is not run here.
 import argparse, datetime as dt, hashlib, json, os, pickle, sqlite3, sys, time
 import numpy as np, torch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-from research import engine as E, train as T
+from research import engine as E, train as T, feedback as F
 from research.live_model import LiveModel
 
 def layers(state):
@@ -91,7 +91,8 @@ def main():
         fx.append({'mint': ep.mint, 'creator': ep.creator, 'tags': ep.tags, 'price': ep.price.tolist(), 'volume': ep.volume.tolist(), 'trades': raw, 'api': api,
                    'expect': {'decision_t': d, 'row_at_decision': [None if np.isnan(v) else float(v) for v in lm.row(ep, d)], 'buy_prob': lm.buy_prob(ep, d),
                               'entry_crash_prob': lm.entry_crash_prob(ep, d), 'crash_prob': {str(t): lm.crash_prob(ep, e, t) for t in range(e + 1, min(e + 40, end))},
-                              'bought': b, 'fills': tr.fills if tr else None, 'net_pct': tr.net_return_pct() if tr else None}})
+                              'bought': b, 'fills': tr.fills if tr else None, 'net_pct': tr.net_return_pct() if tr else None,
+                              'feedback': F.label_trade(ep, d, b, trade=tr, seller=lm.seller())}})
     os.makedirs(a.fixtures, exist_ok=True)
     json.dump({'model': spec, 'launches': fx}, open(os.path.join(a.fixtures, 'model_parity.json'), 'w'))
     print(f'wrote {a.out} (sha {spec["sha256"]}, {os.path.getsize(a.out)//1024} KB) and {len(fx)} parity launches ({sum(f["expect"]["bought"] for f in fx)} bought)')
