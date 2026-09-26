@@ -9,7 +9,7 @@ import {readFileSync} from 'node:fs';
 const read=p=>readFileSync(new URL(`../public/${p}`,import.meta.url),'utf8');
 const BASELINE={
  'studies.html':{
-  ids:'start-form max-tokens concurrency min-cap launch-filter start status watching-panel watching-count watching paper-panel paper refresh studies detail study-title stop study-status study-notes costs group winner-loser group-analysis live-tokens tokens token-detail token-title refresh-token token-mint token-chart token-metrics early-windows token-chat token-analysis vision-reviews exclusion-form exclusion-reason exclude exclusion-status evidence-status frame play play-speed evidence-image evidence-link token-json overview-panel refresh-overview ledger paper-all overview'.split(' '),
+  ids:'start-form max-tokens concurrency min-cap launch-filter start status watching-panel watching-count watching paper-panel paper refresh studies detail study-title stop study-status study-notes costs group winner-loser group-analysis live-tokens tokens token-detail token-title refresh-token token-mint token-chart token-metrics early-windows token-chat token-analysis vision-reviews exclusion-form exclusion-reason exclude exclusion-status evidence-status frame play play-speed evidence-image evidence-link token-json overview-panel refresh-overview ledger paper-all overview final-panel final-numbers'.split(' '),
   headings:['Start a bounded study','Watching now','Paper trading: this study','Saved and active studies','Study','Group comparison','Individual tokens','History: all tokens across all studies'],
   nav:['/studies.html','/paper.html','/observer.html'],
  },

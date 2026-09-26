@@ -212,3 +212,38 @@ export function tradesHtml(tokens,strategy='filtered',show='all'){
  const rows=list.map(t=>{const p=t[key],m=t[mkey];return `<tr><td>${esc(t.name||t.mint?.slice(0,10))}</td><td class="small">${t.studyStartedAt?esc(new Date(t.studyStartedAt).toLocaleString(undefined,{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})):'—'}</td><td class="small">${esc(tagText(t))}</td><td>${clock(p.holdMs)}</td><td class="small">${esc(p.exitReason??'')}</td><td class="${p.pnlPct>0?'c-winner':p.pnlPct<0?'c-tanked':''}">${pct(p.pnlPct)}</td><td class="${p.pnlUsd>0?'c-winner':p.pnlUsd<0?'c-tanked':''}">${money(p.pnlUsd)}</td><td class="small">${esc(m?.label??(p.status==='open'?'still open':'—'))}</td><td class="small">${after(m)}</td></tr>`;}).join('');
  return summary+`<div class="table-scroll"><table><thead><tr><th>Token</th><th>Study</th><th>Launch</th><th>Held</th><th>Exit</th><th>P&L %</th><th>P&L ($2)</th><th>What went wrong</th><th>After our exit</th></tr></thead><tbody>${rows||'<tr><td colspan="9">No trades for this view.</td></tr>'}</tbody></table></div><p class="muted small">P&L after 1.25% fee + 2% slippage per side on displayed prices; "after our exit" is the highest and final price in the rest of the 10-minute window relative to our sale.</p>`;
 }
+
+// Final numbers for one study: counts, outcomes, final and peak stats, best/worst, paper totals, excluded list.
+// Same outcome lines as the rest of the page: winner above +7% final, tanked at -50% or worse.
+export function finalNumbersHtml(tokens=[],paper=null){
+ const pct=v=>v==null?'—':(v>0?'+':'')+num(v,1)+'%';
+ const money=v=>v==null?'—':(v>=0?'+$':'-$')+Math.abs(v).toFixed(2);
+ const tone=v=>v==null?'':v>0?'c-winner':v<0?'c-tanked':'';
+ const ok=v=>typeof v==='number'&&Number.isFinite(v);
+ const avg=v=>{const a=v.filter(ok);return a.length?a.reduce((s,x)=>s+x,0)/a.length:null;};
+ const label=t=>esc(t.name||t.mint?.slice(0,10)||'token');
+ const excluded=tokens.filter(t=>t.excluded),included=tokens.filter(t=>!t.excluded);
+ const scored=included.filter(t=>ok(t.metrics?.changePct));
+ const finals=scored.map(t=>t.metrics.changePct),peaks=scored.map(t=>t.metrics.peakGainPct);
+ const winners=scored.filter(t=>t.metrics.changePct>7).length,tanked=scored.filter(t=>t.metrics.changePct<=-50).length;
+ const byFinal=[...scored].sort((a,b)=>b.metrics.changePct-a.metrics.changePct);
+ const top=scored.filter(t=>ok(t.metrics.peakGainPct)).sort((a,b)=>b.metrics.peakGainPct-a.metrics.peakGainPct)[0];
+ const best=byFinal[0],worst=byFinal.at(-1);
+ const tile=(k,v,sub='',c='')=>`<article><span class="label">${esc(k)}</span><strong class="${c}">${v}</strong><span class="small muted">${sub}</span></article>`;
+ const pa=paper?.all?.overall,pf=paper?.filtered?.overall;
+ const paperLine=(name,o)=>o?`<tr><td>${esc(name)}</td><td>${esc(o.trades)}</td><td>${o.winRate==null?'—':esc(o.winRate)+'%'}</td><td class="${tone(o.avgPct)}">${pct(o.avgPct)}</td><td>${pct(o.medianPct)}</td><td class="${tone(o.totalUsd)}">${money(o.totalUsd)}</td></tr>`:'';
+ return `<div class="stats paper-stats">${[
+  tile('Tokens',`${esc(scored.length)} scored`,`${esc(tokens.length)} recorded · ${esc(excluded.length)} excluded${included.length>scored.length?` · ${esc(included.length-scored.length)} pending`:''}`),
+  tile('Outcomes',`<span class="c-winner">${esc(winners)}</span> · ${esc(scored.length-winners)} · <span class="c-tanked">${esc(tanked)}</span>`,'winners · losers · of which tanked'),
+  tile('Final change',pct(avg(finals)),`avg · median ${pct(median(finals))}`,tone(avg(finals))),
+  tile('Peak gain',pct(avg(peaks)),`avg · median ${pct(median(peaks))}`),
+ ].join('')}</div>
+<div class="stats paper-stats">${[
+  tile('Best final',best?pct(best.metrics.changePct):'—',best?label(best):'',tone(best?.metrics.changePct)),
+  tile('Worst final',worst?pct(worst.metrics.changePct):'—',worst?label(worst):'',tone(worst?.metrics.changePct)),
+  tile('Highest peak',top?pct(top.metrics.peakGainPct):'—',top?label(top):''),
+  tile('Paper total (all tokens)',money(pa?.totalUsd),pa?`${esc(pa.trades)} trades · ${pa.winRate==null?'—':esc(pa.winRate)+'%'} won`:'no trades yet',tone(pa?.totalUsd)),
+ ].join('')}</div>
+${pa||pf?`<div class="table-scroll"><table><thead><tr><th>Paper trading</th><th>Closed trades</th><th>Won</th><th>Avg</th><th>Median</th><th>Total</th></tr></thead><tbody>${paperLine('All tradable tokens',pa)}${paperLine('Filtered: fee-routed or mayhem',pf)}</tbody></table></div>`:''}
+<p class="muted small">Excluded (${esc(excluded.length)}): ${excluded.length?excluded.map(t=>`${label(t)}${ok(t.metrics?.changePct)?' '+pct(t.metrics.changePct):''}${t.exclusionReason?' ('+esc(t.exclusionReason)+')':''}`).join(' · '):'none'}. Excluded tokens are left out of the outcome, change and best/worst numbers; paper totals match the paper panel below. Winner: final above +7%. Tanked: −50% or worse.</p>`;
+}
