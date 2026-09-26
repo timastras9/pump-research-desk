@@ -1,14 +1,15 @@
 // Paper trading from displayed-price observations. Decisions walk the samples in time order, so a
 // decision at time t never sees a later price. Fills use the next observed price to model delay.
 // v2 (backtest on 100 recorded tokens): flat check at 60s and a -25% stop cut the two losing exits of v1.
-export const PAPER_RULES={version:'paper-v2',sizeUsd:2,costPerSide:0.0325,deadAfterMs:30000,noChaseAbovePct:30,
-  earlyWindowMs:60000,earlyTakePct:30,checkAtMs:60000,checkMinPct:5,trailArmPct:20,trailPct:30,stopPct:25,maxHoldMs:600000};
+// v3: sell part of the position on the early pump and let the rest run ('sold too early' left +126% on average).
+export const PAPER_RULES={version:'paper-v3',sizeUsd:2,costPerSide:0.0325,deadAfterMs:30000,noChaseAbovePct:30,
+  earlyWindowMs:60000,earlyTakePct:30,partialTakeFraction:0.5,checkAtMs:60000,checkMinPct:5,trailArmPct:20,trailPct:30,stopPct:25,maxHoldMs:600000};
 export type PaperRules=typeof PAPER_RULES;
 export type PaperTrade={version:string;status:'skipped'|'open'|'closed';skipReason?:string;entryAt?:number;entryPrice?:number;
-  exitAt?:number;exitPrice?:number;exitReason?:string;highPrice?:number;holdMs?:number;pnlPct?:number;pnlUsd?:number};
+  exitAt?:number;exitPrice?:number;exitReason?:string;partialAt?:number;partialPrice?:number;partialFraction?:number;highPrice?:number;holdMs?:number;pnlPct?:number;pnlUsd?:number};
 type Sample={time:number;priceUsd:number|null};
 // Tunable fields and their allowed ranges; anything else stays fixed so costs and sizing cannot be tuned away.
-export const TUNABLE={earlyTakePct:[5,200],earlyWindowMs:[10000,180000],checkAtMs:[15000,300000],checkMinPct:[0,50],stopPct:[5,90],trailPct:[5,90],trailArmPct:[0,200]} as const;
+export const TUNABLE={partialTakeFraction:[0.1,1],earlyTakePct:[5,200],earlyWindowMs:[10000,180000],checkAtMs:[15000,300000],checkMinPct:[0,50],stopPct:[5,90],trailPct:[5,90],trailArmPct:[0,200]} as const;
 export function validRules(input:unknown):PaperRules{
   const r={...PAPER_RULES};if(!input||typeof input!=='object')return r;
   for(const [k,[lo,hi]] of Object.entries(TUNABLE)){const v=(input as Record<string,unknown>)[k];if(v===undefined)continue;if(typeof v!=='number'||!Number.isFinite(v)||v<lo||v>hi)throw Error(`Paper rule ${k} must be between ${lo} and ${hi}.`);(r as Record<string,unknown>)[k]=v;}
@@ -17,7 +18,9 @@ export function validRules(input:unknown):PaperRules{
 }
 const pnl=(R:PaperRules,entry:number,exit:number)=>((exit*(1-R.costPerSide))/(entry*(1+R.costPerSide))-1)*100;
 function close(R:PaperRules,trade:PaperTrade,entry:{time:number;priceUsd:number},exit:{time:number;priceUsd:number},reason:string,high:number,status:'open'|'closed'='closed'):PaperTrade{
-  const pnlPct=pnl(R,entry.priceUsd,exit.priceUsd);
+  const part=trade.partialPrice!=null?trade.partialFraction??0:0;
+  const pnlPct=part*pnl(R,entry.priceUsd,trade.partialPrice??exit.priceUsd)+(1-part)*pnl(R,entry.priceUsd,exit.priceUsd);
+  if(part)reason=`sold ${Math.round(part*100)}% at +${R.earlyTakePct}%, rest: ${reason}`;
   return {...trade,status,exitAt:exit.time,exitPrice:exit.priceUsd,exitReason:reason,highPrice:high,holdMs:exit.time-entry.time,pnlPct:Number(pnlPct.toFixed(2)),pnlUsd:Number((R.sizeUsd*pnlPct/100).toFixed(4))};
 }
 // skip: a reason known before trading (e.g. bulk spam launch). stillRecording: leave an unfinished position open.
@@ -31,13 +34,16 @@ export function paperTrade(samples:Sample[],opts:{skip?:string|null;stillRecordi
   if(i<0||v[i].time-first.time>R.deadAfterMs)return opts.stillRecording&&v.at(-1)!.time-first.time<=R.deadAfterMs?{...base,status:'open',skipReason:'waiting for first trade'}:{...base,status:'skipped',skipReason:`dead: no trade within ${R.deadAfterMs/1000}s`};
   if(v[i].priceUsd>=first.priceUsd*(1+R.noChaseAbovePct/100))return {...base,status:'skipped',skipReason:'already pumped: no chase'};
   const e=v[i+1];if(!e)return {...base,status:'open',skipReason:'entry pending'};
-  const trade:PaperTrade={...base,status:'open',entryAt:e.time,entryPrice:e.priceUsd};
+  let trade:PaperTrade={...base,status:'open',entryAt:e.time,entryPrice:e.priceUsd};
   let high=e.priceUsd,checked=false;
   const fill=(j:number)=>v[Math.min(j+1,v.length-1)];
   for(let j=i+2;j<v.length;j++){
     const s=v[j],el=s.time-e.time,pct=(s.priceUsd/e.priceUsd-1)*100;high=Math.max(high,s.priceUsd);
     if(pct<=-R.stopPct)return close(R,trade,e,fill(j),`stop -${R.stopPct}%`,high);
-    if(el<=R.earlyWindowMs&&pct>=R.earlyTakePct)return close(R,trade,e,fill(j),`early pump: take +${R.earlyTakePct}%`,high);
+    if(el<=R.earlyWindowMs&&pct>=R.earlyTakePct&&trade.partialPrice==null){
+      const f=R.partialTakeFraction??1;if(f>=1)return close(R,trade,e,fill(j),`early pump: take +${R.earlyTakePct}%`,high);
+      const p=fill(j);trade={...trade,partialAt:p.time,partialPrice:p.priceUsd,partialFraction:f};checked=true;continue;   // the rest rides; no flat check after a pump
+    }
     if(!checked&&el>=R.checkAtMs){checked=true;if(high<e.priceUsd*(1+R.checkMinPct/100))return close(R,trade,e,fill(j),`${R.checkAtMs/1000}s check: never +${R.checkMinPct}%`,high);}
     if(high>=e.priceUsd*(1+R.trailArmPct/100)&&s.priceUsd<=high*(1-R.trailPct/100))return close(R,trade,e,fill(j),`trailing stop -${R.trailPct}% from high`,high);
     if(el>=R.maxHoldMs)return close(R,trade,e,fill(j),`${R.maxHoldMs/60000}-min time exit`,high);
@@ -78,10 +84,14 @@ function around(key:keyof typeof TUNABLE,value:number){const [lo,hi]=TUNABLE[key
 export function tunePaper(tokens:TuneToken[],current:PaperRules=PAPER_RULES,currentFilter:string='all',chooseFilter=false){
   const score=(rules:PaperRules,filter:string,test:boolean)=>{const p=tokens.filter(t=>t.test===test).map(t=>paperTrade(tapeSamples(t.tape),{skip:t.spam?'bulk spam launch':passesFilter(filter,t.tags)?null:'filtered out',rules})).filter(x=>x.status==='closed'&&x.pnlPct!=null).map(x=>x.pnlPct!);
     return {trades:p.length,avgPct:p.length?Number((p.reduce((a,b)=>a+b,0)/p.length).toFixed(2)):null,totalUsd:Number(p.reduce((a,x)=>a+rules.sizeUsd*x/100,0).toFixed(3))};};
-  const filters=chooseFilter?[...PAPER_FILTERS]:[currentFilter];
+  // Staged search keeps end-of-study tuning cheap as data grows: pick the launch filter with the current exits,
+  // then search exits (including the partial-sale fraction) around the current rules for that filter.
+  const fracs=[...new Set([Math.max(0.1,Math.round((current.partialTakeFraction??1)*0.7*100)/100),current.partialTakeFraction??1,1])];
+  let filter=currentFilter;
+  if(chooseFilter){let bestF=-1e9;for(const f of PAPER_FILTERS)for(const earlyTakePct of around('earlyTakePct',current.earlyTakePct)){const sc=score({...current,earlyTakePct},f,false);if(sc.trades>=10&&(sc.avgPct??-1e9)>bestF){bestF=sc.avgPct??-1e9;filter=f;}}}
   let best:{rules:PaperRules;filter:string;train:ReturnType<typeof score>}|null=null;
-  for(const filter of filters)for(const earlyTakePct of around('earlyTakePct',current.earlyTakePct))for(const checkAtMs of around('checkAtMs',current.checkAtMs))for(const stopPct of around('stopPct',current.stopPct))for(const trailPct of around('trailPct',current.trailPct)){
-    const rules={...current,earlyTakePct,checkAtMs,stopPct,trailPct,version:`tuned-t${earlyTakePct}-c${checkAtMs/1000}-s${stopPct}-tr${trailPct}`};
+  for(const partialTakeFraction of fracs)for(const earlyTakePct of around('earlyTakePct',current.earlyTakePct))for(const checkAtMs of around('checkAtMs',current.checkAtMs))for(const stopPct of around('stopPct',current.stopPct))for(const trailPct of around('trailPct',current.trailPct)){
+    const rules={...current,partialTakeFraction,earlyTakePct,checkAtMs,stopPct,trailPct,version:`tuned-p${Math.round(partialTakeFraction*100)}-t${earlyTakePct}-c${checkAtMs/1000}-s${stopPct}-tr${trailPct}`};
     const train=score(rules,filter,false);
     if(train.trades>=10&&(!best||(train.avgPct??-1e9)>(best.train.avgPct??-1e9)))best={rules,filter,train};
   }
