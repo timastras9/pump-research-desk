@@ -80,3 +80,15 @@ export function watchingHtml(tokens,mediaUrl,now=Date.now()){
 <p>${age(Math.max(0,end-now))} left · ${age(t.createdAt?now-t.createdAt:null)} since launch · ${esc(t.frameCount??0)} frames · last capture ${lastAt?age(now-lastAt)+' ago':'none'}</p>
 <p class="muted">${esc(t.launch?.launchTool??'launch source unknown')}${t.launch?.mayhem?' · mayhem':''}${t.candidate?.marketCapUsd?` · cap first seen $${num(t.candidate.marketCapUsd)}`:''}${stale?' · capture delayed':''}</p></article>`;}).join('');
 }
+
+// Current study's token table: live tokens first (live price reads), then finished ones by final change.
+export function tokenTableHtml(rows,now=Date.now()){
+ if(!rows.length)return '<p>Waiting for a fresh token. No observation is implied until it appears here.</p>';
+ const live=t=>ACTIVE.includes(t.status);
+ const nowPct=t=>t.firstPriceUsd&&t.lastPriceUsd?(t.lastPriceUsd/t.firstPriceUsd-1)*100:t.metrics?.changePct??null;
+ const peakPct=t=>t.firstPriceUsd&&t.peakPriceUsd?(t.peakPriceUsd/t.firstPriceUsd-1)*100:t.metrics?.peakGainPct??null;
+ const sorted=[...rows].sort((a,b)=>live(b)-live(a)||(live(a)?(a.endsAt??0)-(b.endsAt??0):(nowPct(b)??-1e9)-(nowPct(a)??-1e9)));
+ const pct=v=>v==null?'—':(v>0?'+':'')+num(v,1)+'%';
+ const cls=v=>v==null?'':v>7?'c-winner':v<=-50?'c-tanked':'';
+ return `<table><thead><tr><th>Token</th><th>Status</th><th>Now</th><th>Peak</th><th>Time left</th><th>Frames</th><th>Launch</th><th>Comparison</th><th>Review</th></tr></thead><tbody>${sorted.map(t=>{const n=nowPct(t),p=peakPct(t);return `<tr><td>${esc(t.name||t.mint?.slice(0,10))}</td><td>${esc(t.status)}</td><td class="${cls(n)}">${pct(n)}</td><td>${pct(p)}</td><td>${live(t)?age(Math.max(0,(t.endsAt??now)-now)):'done'}</td><td>${esc(t.frameCount??0)}</td><td>${esc(t.launch?.launchTool??'—')}${t.launch?.mayhem?' · mayhem':''}</td><td>${t.excluded?'Excluded':'Included'}</td><td><button data-token="${esc(t.id)}">Open</button></td></tr>`;}).join('')}</tbody></table>`;
+}

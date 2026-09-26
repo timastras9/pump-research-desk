@@ -45,3 +45,16 @@ test('watching cards show only live tokens with live change, peak and escaped na
  assert.ok(!html.includes('<img src=x>'));assert.match(html,/\+25\.0%/);assert.match(html,/peak \+50\.0% at 40s/);assert.match(html,/9m 10s left/);assert.match(html,/\/media\?key=k1/);assert.match(html,/ up/);
  assert.match(watchingHtml([],()=>null,now),/No tokens are being recorded/);
 });
+
+test('current study table lists live tokens first with live now/peak, falling back to review metrics',async()=>{
+ // @ts-ignore browser module without types
+ const {tokenTableHtml}=await import('../public/study-charts.js');
+ const now=1_000_000;
+ const html=tokenTableHtml([
+  {id:'f',name:'Finished',status:'finished',metrics:{changePct:-90,peakGainPct:10},frameCount:900},
+  {id:'l',name:'Live<b>',status:'watching',startedAt:now-60000,endsAt:now+540000,firstPriceUsd:1,lastPriceUsd:1.3,peakPriceUsd:2,frameCount:120,launch:{launchTool:'axiom',mayhem:true}},
+ ],now);
+ assert.ok(html.indexOf('Live&lt;b&gt;')<html.indexOf('Finished'),'live token first');
+ assert.match(html,/\+30\.0%/);assert.match(html,/\+100\.0%/);assert.match(html,/9m 00s/);assert.match(html,/c-tanked">-90\.0%/);assert.match(html,/axiom · mayhem/);
+ assert.match(tokenTableHtml([]),/Waiting for a fresh token/);
+});
