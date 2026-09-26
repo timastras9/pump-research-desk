@@ -7,3 +7,11 @@ dl{display:grid;grid-template-columns:1fr 1fr;gap:8px 25px;margin:0}dt{color:var
 .c-winner{color:var(--accent)}.c-loser{color:#6f8593}.c-tanked{color:var(--red)}.c-muted,.c-unscored{color:#91a4af}.c-amber{color:var(--amber)}
 #overview-panel>summary{display:flex;justify-content:space-between;align-items:center;gap:12px;cursor:pointer}#overview-panel>summary h2{margin:0}
 .paper-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px;margin:12px 0}.paper-card{border:1px solid var(--line);border-radius:8px;padding:16px}.paper-card .big{font-size:1.8rem;font-weight:650;margin:4px 0;font-variant-numeric:tabular-nums}
+.c-buy{color:#6cb4ff}.c-sell{color:#c792ea}
+
+.tabs{display:flex;gap:4px}.tabs a{padding:8px 14px;border-radius:6px;color:var(--muted);font-size:.9rem}.tabs a:hover{color:var(--text);background:var(--panel2)}.tabs a[aria-current="page"]{color:var(--text);background:var(--panel2);box-shadow:inset 0 -2px 0 var(--accent)}
+.paper-stats{grid-template-columns:repeat(auto-fit,minmax(200px,1fr));margin-bottom:20px}.paper-stats strong{font-size:1.7rem}
+.paper-charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px}.paper-figure{margin:0}.paper-figure figcaption{font-size:.85rem;color:var(--muted);margin-bottom:6px}
+.path-chart .axis-zero{stroke:#4a5d69}.path-chart .rule-change{stroke:#91a4af;stroke-dasharray:3 4}.path-chart .rule-label,.path-chart .bar-label{font-size:11px;fill:var(--muted)}.path-chart .direct-label{font-size:12px;fill:var(--text)}
+.c-filtered{color:#5fa83a}.c-all{color:#3f7fc0}
+@media(max-width:680px){.tabs a{padding:6px 8px;font-size:.8rem}}

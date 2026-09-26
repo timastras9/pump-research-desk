@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {paperTrade,summarizePaper,PAPER_RULES,validRules,tunePaper,tapeSamples,type TuneToken} from '../src/paper-trader';
+import {paperTrade,summarizePaper,PAPER_RULES,validRules,tunePaper,tapeSamples,classifyTrade,mistakeSummary,passesFilter,type TuneToken} from '../src/paper-trader';
 
 // [seconds, price] pairs; a trade starts when the price first changes, filled at the next reading.
 const s=(pairs:[number,number][])=>pairs.map(([t,p])=>({time:t*1000,priceUsd:p}));
@@ -45,15 +45,32 @@ test('rules can be tuned only within safe ranges; costs and size stay fixed',()=
  assert.throws(()=>validRules({stopPct:0}),/stopPct/);assert.throws(()=>validRules({trailPct:'30'}),/trailPct/);
  assert.equal(paperTrade(s([[0,1],[5,1.01],[6,1.0],[10,0.84],[11,0.83]]),{rules:validRules({stopPct:15})}).exitReason,'stop -15%');
 });
-test('tuner picks rules on earlier studies and only promotes when they also win on the newest study',()=>{
- // tape: [seconds, % from first read]; pumps that fade late reward a smaller early take-profit
+test('tuner searches around the current rules, can choose a launch filter, and only promotes on unseen wins',()=>{
+ // tape: [seconds, % from first read]; fee-routed tokens pump then fade, others crash
  const pumpFade:[number,number][]=[[0,0],[2,1],[3,0],[10,22],[11,24],[40,-40],[41,-45]];
- const flat:[number,number][]=[[0,0],[2,1],[3,0],[50,1],[70,0],[71,-1]];
- const make=(tape:[number,number][],test:boolean,skip:string|null=null):TuneToken=>({tape,skip,test});
- const tokens:TuneToken[]=[...Array.from({length:12},()=>make(pumpFade,false)),...Array.from({length:6},()=>make(pumpFade,true)),make(flat,false),make(flat,true,'bulk spam launch')];
- const out=tunePaper(tokens) as any;
- assert.equal(out.status,'promote');assert.equal(out.suggested.rules.earlyTakePct,20);assert.ok(out.suggested.test.avgPct>out.current.test.avgPct);
- assert.equal(out.suggested.rules.costPerSide,PAPER_RULES.costPerSide);
+ const crash:[number,number][]=[[0,0],[2,1],[3,0],[8,-30],[9,-35]];
+ const tags=(feeRouted:boolean)=>({feeRouted,mayhem:false,terminal:true});
+ const make=(tape:[number,number][],test:boolean,fee:boolean,spam=false):TuneToken=>({tape,spam,tags:tags(fee),test});
+ const tokens:TuneToken[]=[...Array.from({length:12},()=>make(pumpFade,false,true)),...Array.from({length:10},()=>make(crash,false,false)),...Array.from({length:6},()=>make(pumpFade,true,true)),...Array.from({length:5},()=>make(crash,true,false)),make(crash,true,true,true)];
+ const exitsOnly=tunePaper(tokens,PAPER_RULES,'all',false) as any;
+ assert.ok([21,30,42].includes(exitsOnly.suggested.rules.earlyTakePct),'candidates are x0.7/x1/x1.4 around the current 30%');
+ const withFilter=tunePaper(tokens,PAPER_RULES,'all',true) as any;
+ assert.equal(withFilter.suggested.filter,'feeRouted');assert.equal(withFilter.status,'promote');assert.ok(withFilter.suggested.test.avgPct>withFilter.current.test.avgPct);
+ assert.equal(withFilter.suggested.rules.costPerSide,PAPER_RULES.costPerSide);
  assert.equal((tunePaper(tokens.slice(0,3)) as any).status,'insufficient-data');
  assert.deepEqual(tapeSamples([[2,50]]),[{time:2000,priceUsd:1.5}]);
+ assert.equal(passesFilter('feeRouted|mayhem',{feeRouted:false,mayhem:true,terminal:false}),true);assert.equal(passesFilter('terminal&feeRouted',{feeRouted:false,mayhem:true,terminal:true}),false);
+});
+test('hindsight labels name what went wrong and what it cost',()=>{
+ const tanker=s([[0,1],[5,1.01],[6,1.0],[10,0.74],[11,0.6],[300,0.3]]);
+ assert.equal(classifyTrade(paperTrade(tanker),tanker)!.label,'bought a tanker');
+ const runAway=s([[0,1],[5,1.02],[6,1.05],[20,1.4],[21,1.38],[200,2.5]]);
+ const early=classifyTrade(paperTrade(runAway),runAway)!;assert.equal(early.label,'sold too early');assert.ok(early.missedUpsidePct!>=30);
+ assert.equal(early.after!.decision,'exit');assert.ok(early.after!.rest.maxPct>=78);assert.equal(early.after!.rest.maxAtSec,200);
+ const flat=s([[0,1],[5,1.01],[6,1.02],[30,1.03],[67,1.0],[68,0.99],[300,0.99]]);
+ assert.equal(classifyTrade(paperTrade(flat),flat)!.label,'held a flat token');
+ const missed=s([[0,1],[40,1],[200,2],[590,1.6]]);
+ assert.equal(classifyTrade(paperTrade(missed),missed)!.label,'false skip: missed a winner');
+ const sum=mistakeSummary([{mistake:classifyTrade(paperTrade(tanker),tanker)},{mistake:classifyTrade(paperTrade(flat),flat)},{mistake:null}]);
+ assert.equal(sum['bought a tanker'].count,1);assert.ok(sum['bought a tanker'].costUsd<0);assert.equal(sum['held a flat token'].count,1);
 });

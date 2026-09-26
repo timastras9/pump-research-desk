@@ -229,6 +229,7 @@ async function route(request: Request, env: Env): Promise<Response> {
       if(path==='/api/studies/token' && request.method==='GET')return json(await studies.token(url.searchParams.get('id')??''));
       if(path==='/api/studies/flag' && request.method==='POST'){const input=await body(request);if(typeof input.id!=='string'||typeof input.excluded!=='boolean'||typeof input.reason!=='string')return json({error:'Invalid exclusion update.'},400);return json(await studies.flag(input.id,input.excluded,input.reason));}
       if(path==='/api/studies/start' && request.method==='POST')return json(await studies.start(await body(request)));
+      if(path==='/api/studies/paper-auto' && request.method==='POST'){const input=await body(request);if(typeof input.enabled!=='boolean')return json({error:'enabled must be true or false.'},400);return json(await studies.setPaperAuto(input.enabled));}
       if(path==='/api/studies/paper-rules' && request.method==='POST')return json(await studies.setPaperRules(await body(request)));
       if(path==='/api/studies/overview' && request.method==='GET')return json(await studies.overview());
       if(path==='/api/studies/detail' && request.method==='GET')return json(await studies.detail(url.searchParams.get('id')??''));

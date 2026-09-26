@@ -50,3 +50,10 @@ test('chat traits are compared and missing chat never counts as quiet chat',asyn
  const many=Array.from({length:100},(_,i)=>({...row('So1anaMint'+String(i).padStart(34,'x'),i%10===0?2:0.3,launch('axiom',{twitter:true})),chatWindows:cw(120,60,30)}));
  const size=JSON.stringify(compactAggregateInput(many)).length;assert.ok(size<24000,`payload ${size}`);
 });
+
+test('mistake review output is parsed and bounded',async()=>{
+ const {validateLessons}=await import('../src/study-analysis');
+ const v=validateLessons(JSON.stringify({patterns:[{mistake:'sold too early',cases:8,knownSignal:'terminal=true',afterData:'ran +300%'},{},{},{},{}],ruleChanges:[{field:'earlyTakePct',to:'60',why:'x'.repeat(500)}],caveat:'hypotheses'}));
+ assert.equal(v.patterns.length,4);assert.equal(v.patterns[0].cases,8);assert.equal(v.ruleChanges[0].why.length,140);
+ assert.throws(()=>validateLessons('{"patterns":"no"}'));
+});

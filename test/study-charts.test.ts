@@ -58,3 +58,27 @@ test('current study table lists live tokens first with live now/peak, falling ba
  assert.match(html,/\+30\.0%/);assert.match(html,/\+100\.0%/);assert.match(html,/9m 00s/);assert.match(html,/c-tanked">-90\.0%/);assert.match(html,/axiom · mayhem/);
  assert.match(tokenTableHtml([]),/Waiting for a fresh token/);
 });
+
+test('paper tab shows cumulative results, per-study bars, rule changes and an honest trend verdict',async()=>{
+ // @ts-ignore browser module without types
+ const {improvementHtml,lessonsHtml}=await import('../public/study-charts.js');
+ const study=(at:number,version:string,fTotal:number,fAvg:number,aTotal:number,extra:any={})=>({startedAt:at,paperResult:{rules:{version},filter:'feeRouted|mayhem',filtered:{trades:10,winRate:50,avgPct:fAvg,totalUsd:fTotal},all:{trades:20,avgPct:-1,totalUsd:aTotal}},paperMistakes:{filtered:{'bought a tanker':{count:3,costUsd:-1.2},'good trade':{count:5,costUsd:2}}},...extra});
+ const html=improvementHtml([study(3000,'tuned-x',2,10,-0.2),study(1000,'paper-v2',1,5,-0.5,{paperAutoApplied:{to:{rules:'tuned-x',filter:'feeRouted'}}}),{startedAt:2000,paperResult:null}]);
+ assert.match(html,/\+\$3\.00/);assert.match(html,/Improving: latest study \+10\.0% per trade vs \+5\.0% before/);
+ assert.equal((html.match(/<rect /g)||[]).length,2);assert.equal((html.match(/class="rule-change"/g)||[]).length,2,'one rule change marked on each chart');
+ assert.match(html,/bought a tanker \(3\)/);assert.match(html,/auto-applied next/);
+ assert.match(improvementHtml([]),/No finished studies/);
+ const lessons=lessonsHtml({startedAt:1,paperLessons:{cases:[{}],lessons:{patterns:[{mistake:'<b>x',cases:2,knownSignal:'mayhem',afterData:'+900%'}],ruleChanges:[{field:'earlyTakePct',to:'60',why:'left upside'}],caveat:'test'}}});
+ assert.ok(!lessons.includes('<b>x'));assert.match(lessons,/earlyTakePct → 60/);
+});
+
+test('trade table sums winners and losers separately and filters by strategy and outcome',async()=>{
+ // @ts-ignore browser module without types
+ const {tradesHtml}=await import('../public/study-charts.js');
+ const tok=(name:string,pnlPct:number,pnlUsd:number,filtered=true)=>({name,studyStartedAt:1,tags:{feeRouted:true,mayhem:false,terminal:true},paper:{status:'closed',pnlPct,pnlUsd,holdMs:65000,exitReason:'x'},paperFiltered:filtered?{status:'closed',pnlPct,pnlUsd,holdMs:65000,exitReason:'early pump: take +30%'}:{status:'skipped'},filteredMistake:{label:'sold too early',after:{rest:{maxPct:120,endPct:40}}}});
+ const toks=[tok('Winner<b>',30,0.6),tok('Loser',-20,-0.4),tok('AllOnly',10,0.2,false)];
+ const html=tradesHtml(toks,'filtered','all');
+ assert.match(html,/Winning trades<\/span><strong class="c-winner">\+\$0\.60/);assert.match(html,/-\$0\.40/);assert.match(html,/2 trades · 50% won/);
+ assert.ok(!html.includes('Winner<b>'));assert.ok(!html.includes('AllOnly'),'filtered view excludes tokens it skipped');assert.match(html,/1:05/);assert.match(html,/high \+120\.0%/);
+ assert.ok(!tradesHtml(toks,'filtered','winners').includes('>Loser<'));assert.match(tradesHtml(toks,'all','all'),/AllOnly/);
+});
