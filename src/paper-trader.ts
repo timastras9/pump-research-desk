@@ -3,13 +3,13 @@
 // v2 (backtest on 100 recorded tokens): flat check at 60s and a -25% stop cut the two losing exits of v1.
 // v3: sell part of the position on the early pump and let the rest run ('sold too early' left +126% on average).
 export const PAPER_RULES={version:'paper-v3',sizeUsd:2,costPerSide:0.0325,deadAfterMs:30000,noChaseAbovePct:30,
-  earlyWindowMs:60000,earlyTakePct:30,partialTakeFraction:0.5,checkAtMs:60000,checkMinPct:5,trailArmPct:20,trailPct:30,stopPct:25,maxHoldMs:600000};
+  earlyWindowMs:60000,earlyTakePct:30,partialTakeFraction:0.5,secondTakePct:0,checkAtMs:60000,checkMinPct:5,trailArmPct:20,trailPct:30,stopPct:25,maxHoldMs:600000};
 export type PaperRules=typeof PAPER_RULES;
 export type PaperTrade={version:string;status:'skipped'|'open'|'closed';skipReason?:string;entryAt?:number;entryPrice?:number;
   exitAt?:number;exitPrice?:number;exitReason?:string;partialAt?:number;partialPrice?:number;partialFraction?:number;highPrice?:number;holdMs?:number;pnlPct?:number;pnlUsd?:number};
 type Sample={time:number;priceUsd:number|null};
 // Tunable fields and their allowed ranges; anything else stays fixed so costs and sizing cannot be tuned away.
-export const TUNABLE={partialTakeFraction:[0.1,1],earlyTakePct:[5,200],earlyWindowMs:[10000,180000],checkAtMs:[15000,300000],checkMinPct:[0,50],stopPct:[5,90],trailPct:[5,90],trailArmPct:[0,200]} as const;
+export const TUNABLE={partialTakeFraction:[0.1,1],secondTakePct:[0,500],earlyTakePct:[5,200],earlyWindowMs:[10000,180000],checkAtMs:[15000,300000],checkMinPct:[0,50],stopPct:[5,90],trailPct:[5,90],trailArmPct:[0,200]} as const;
 export function validRules(input:unknown):PaperRules{
   const r={...PAPER_RULES};if(!input||typeof input!=='object')return r;
   for(const [k,[lo,hi]] of Object.entries(TUNABLE)){const v=(input as Record<string,unknown>)[k];if(v===undefined)continue;if(typeof v!=='number'||!Number.isFinite(v)||v<lo||v>hi)throw Error(`Paper rule ${k} must be between ${lo} and ${hi}.`);(r as Record<string,unknown>)[k]=v;}
@@ -40,6 +40,7 @@ export function paperTrade(samples:Sample[],opts:{skip?:string|null;stillRecordi
   for(let j=i+2;j<v.length;j++){
     const s=v[j],el=s.time-e.time,pct=(s.priceUsd/e.priceUsd-1)*100;high=Math.max(high,s.priceUsd);
     if(pct<=-R.stopPct)return close(R,trade,e,fill(j),`stop -${R.stopPct}%`,high);
+    if(trade.partialPrice!=null&&R.secondTakePct>0&&pct>=R.secondTakePct)return close(R,trade,e,fill(j),`second take +${R.secondTakePct}%`,high);
     if(el<=R.earlyWindowMs&&pct>=R.earlyTakePct&&trade.partialPrice==null){
       const f=R.partialTakeFraction??1;if(f>=1)return close(R,trade,e,fill(j),`early pump: take +${R.earlyTakePct}%`,high);
       const p=fill(j);trade={...trade,partialAt:p.time,partialPrice:p.priceUsd,partialFraction:f};checked=true;continue;   // the rest rides; no flat check after a pump

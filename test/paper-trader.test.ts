@@ -88,3 +88,10 @@ test('sell-half rule: takes part of the position on the early pump and lets the 
  const f=paperTrade(fade);assert.match(f.exitReason!,/rest: stop -25%/);assert.ok(f.pnlPct!>cost(1.0,0.7));
  assert.equal(paperTrade(fade,{rules:FULL}).exitReason,'early pump: take +30%');
 });
+
+test('ladder option: half at the first take, the rest at the second take',()=>{
+ const path=s([[0,1],[5,1.02],[6,1.05],[20,1.4],[21,1.39],[90,1.6],[91,1.62],[300,1.1]]);
+ const t=paperTrade(path,{rules:{...PAPER_RULES,partialTakeFraction:0.5,secondTakePct:50}});
+ assert.match(t.exitReason!,/^sold 50% at \+30%, rest: second take \+50%/);assert.equal(t.partialPrice,1.39);assert.equal(t.exitPrice,1.62);
+ assert.equal(PAPER_RULES.secondTakePct,0,'ladder is off by default');
+});
