@@ -42,7 +42,7 @@ export class ResearchDesk extends DurableObject<Env> {
     sql.exec('INSERT INTO research_limits(kind,day,count,last) VALUES(?,?,1,?) ON CONFLICT(kind) DO UPDATE SET day=excluded.day,count=?,last=excluded.last',kind,day,now,row?.day===day?row.count+1:1);return true;
   }
   latestScan(): Awaited<ReturnType<typeof scanExplore>> | null {
-    const row=this.ctx.storage.sql.exec<{data:string}>("SELECT data FROM research_scans ORDER BY json_extract(data,'$.completedAt') DESC LIMIT 1").toArray()[0];return row?JSON.parse(row.data):null;
+    const row=this.ctx.storage.sql.exec<{data:string}>("SELECT data FROM research_scans WHERE json_extract(data,'$.scope')='new-under-60s' ORDER BY json_extract(data,'$.completedAt') DESC LIMIT 1").toArray()[0];return row?JSON.parse(row.data):null;
   }
   scanAvailability() {
     const row=this.ctx.storage.sql.exec<{day:string;count:number;last:number}>('SELECT day,count,last FROM research_limits WHERE kind=?','scan').toArray()[0];
@@ -240,11 +240,13 @@ async function route(request: Request, env: Env): Promise<Response> {
       const assumptions=costs(input.assumptions??{});const scanId=typeof input.scanId==='string'?input.scanId:null;
       const discovery=scanId?await desk.getScan(scanId):null;
       if(scanId && (!discovery || Date.now()-discovery.completedAt>300000 || !discovery.candidates.some(c=>c.mint===input.mint)))return json({error:'Candidate scan expired or mint was not observed. Scan again.'},400);
+      const candidate=discovery?.candidates.find(c=>c.mint===input.mint);
+      if(discovery && (!candidate?.createdAt || Date.now()-candidate.createdAt>60000))return json({error:'This token is now older than one minute. Scan for a fresh launch.'},400);
       if (!await desk.observerAllowed()) return json({error:'Recording budget: wait two minutes between runs; maximum ten runs per UTC day.'},429);
       const id=await desk.beginResearch(input.mint,scanId,Number(seconds),assumptions);
       try {
-        const report=await observe(env,input.mint,id,Number(seconds),assumptions,frame=>desk.saveResearchFrame(id,frame));
-        await desk.finishResearch(id,{...report,discovery});return json(JSON.parse((await desk.researchReport(id))!));
+        const report=await observe(env,input.mint,id,Number(seconds),assumptions,frame=>desk.saveResearchFrame(id,frame),candidate?.createdAt??null);
+        await desk.finishResearch(id,{...report,discovery,tokenCreatedAt:candidate?.createdAt??null,ageAtRecordingStartMs:candidate?.createdAt?report.startedAt-candidate.createdAt:null});return json(JSON.parse((await desk.researchReport(id))!));
       } catch {
         await desk.finishResearch(id,{failure:'Research run interrupted. Saved frames remain available.',completedAt:Date.now()});
         return json({error:'Recording interrupted. Partial evidence is in Saved recordings.',id},502);
