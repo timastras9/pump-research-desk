@@ -67,3 +67,9 @@ Set the production password using protected stdin or the Wrangler prompt. Never 
 - [Workers AI bindings](https://developers.cloudflare.com/workers-ai/configuration/bindings/)
 - [DEX Screener API](https://docs.dexscreener.com/api/reference)
 - [Pump protocol documentation](https://github.com/pump-fun/pump-public-docs)
+
+## Local Coinbase credential entry
+
+Run `npm run credentials` and open http://127.0.0.1:8878. Select OAuth client credentials or a Coinbase API key, fill both fields, and save. The local-only server writes `.secrets/coinbase.json` as plaintext with owner-only permissions (directory 0700, file 0600). This directory is ignored by Git and is not part of the published assets. Saving replaces the existing Coinbase credential file; credentials are never returned to the browser or printed in logs.
+
+Run `npm run credentials:upload` when ready to upload the saved values to the Worker configured in `wrangler.jsonc`. The uploader sends the JSON through Wrangler's standard input, not command arguments. This updates Worker secrets; it does not implement Coinbase OAuth authorization or enable live trading. OAuth credentials identify an application and still require account authorization. Close the local setup server with Ctrl+C when finished.
