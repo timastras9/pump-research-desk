@@ -233,6 +233,12 @@ async function route(request: Request, env: Env): Promise<Response> {
       if(path==='/api/studies/paper-rules' && request.method==='POST')return json(await studies.setPaperRules(await body(request)));
       if(path==='/api/studies/overview' && request.method==='GET')return json(await studies.overview());
       if(path==='/api/studies/detail' && request.method==='GET')return json(await studies.detail(url.searchParams.get('id')??''));
+      if(path==='/api/studies/model' && request.method==='GET')return json(await studies.modelOverview());
+      if(path==='/api/studies/model-run' && request.method==='GET'){const campaign=url.searchParams.get('campaign')??'',sha=url.searchParams.get('sha')??'';const r=await studies.modelRun(campaign,sha);
+        const out={run:JSON.parse(r.run),review:r.review?JSON.parse(r.review):null};
+        return url.searchParams.get('download')==='1'?json({...out.run,astraReview:out.review},200,{'Content-Disposition':`attachment; filename="model-run-${campaign}-${sha}.json"`}):json(out);}
+      if(path==='/api/studies/model-activate' && request.method==='POST'){const input=await body(request);if(typeof input.key!=='string'||typeof input.by!=='string')return json({error:'key and by are required.'},400);return json(await studies.setActiveModel(input.key,input.by));}
+      if(path==='/api/studies/model-eval' && request.method==='POST'){const input=await body(request);if(typeof input.campaignId!=='string')return json({error:'campaignId is required.'},400);return json(await studies.queueModelRun(input.campaignId));}
       if(path==='/api/studies/stop' && request.method==='POST'){const input=await body(request);return json(await studies.stop(typeof input.id==='string'?input.id:undefined));}
       return json({error:'Study route not found.'},404);
     }

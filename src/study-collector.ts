@@ -93,6 +93,18 @@ export class StudyCoordinator extends StudyStore{
   private async modelSchema(){if(!this.schemaReady){for(const s of MODEL_SCHEMA)await this.env.CRYPTO_STUDY.prepare(s).run();this.schemaReady=true;}}
   private async runTokens(campaignId:string):Promise<RunToken[]>{const rows=await this.env.CRYPTO_STUDY.prepare('SELECT data FROM study_tokens WHERE campaign_id=? ORDER BY started_at').bind(campaignId).all<{data:string}>();return rows.results.map(r=>JSON.parse(r.data) as Token).map(t=>({id:t.id,mint:t.mint,name:t.name,createdAt:t.createdAt??null}));}
   modelState(){return {active:this.read<ModelPointer>('activeModel')??null,history:this.read<ModelPointer[]>('modelHistory')??[],jobs:this.read<ModelJob[]>('modelJobs')??[]};}
+  async modelOverview(){await this.modelSchema();
+    const runs=(await this.env.CRYPTO_STUDY.prepare('SELECT campaign_id,model_sha,created_at,summary,review FROM model_runs ORDER BY created_at DESC LIMIT 100').all<{campaign_id:string;model_sha:string;created_at:number;summary:string;review:string|null}>()).results
+      .map(r=>{const rv=r.review?JSON.parse(r.review):null;return {campaignId:r.campaign_id,modelSha:r.model_sha,createdAt:r.created_at,summary:JSON.parse(r.summary),review:rv?{at:rv.at,actualUsd:rv.actualUsd,estimatedUsd:rv.estimatedUsd,error:rv.error??null,summary:rv.review?.summary??null}:null};});
+    const campaigns=(await this.env.CRYPTO_STUDY.prepare('SELECT id,started_at,data FROM study_campaigns ORDER BY started_at DESC LIMIT 50').all<{id:string;started_at:number;data:string}>()).results.map(r=>{const c=JSON.parse(r.data) as Campaign;return {id:r.id,startedAt:r.started_at,status:c.status,tokens:c.tokens};});
+    const models=(await this.env.CRYPTO_MEDIA.list({prefix:'models/'})).objects.map(o=>({key:o.key,size:o.size,uploaded:o.uploaded}));
+    return {...this.modelState(),runs,campaigns,models};}
+  /** Raw JSON text of a run file and its Astra review (strings: RPC typing of the full RunFile is too deep). */
+  async modelRun(campaignId:string,sha:string):Promise<{run:string;review:string|null}>{
+    if(!/^[\w-]+$/.test(campaignId)||!/^[0-9a-f]{8,64}$/.test(sha))throw Error('Invalid run.');
+    const run=await this.env.CRYPTO_MEDIA.get(runKey(campaignId,sha));if(!run)throw Error('Run not found.');
+    const review=await this.env.CRYPTO_MEDIA.get(runKey(campaignId,sha).replace(/\.json$/,'.review.json'));
+    return {run:await run.text(),review:review?await review.text():null};}
   async setActiveModel(key:string,by:string){
     if(!/^models\/[\w.-]+\.json$/.test(key))throw Error('Model key must look like models/<name>.json.');if(!by.trim())throw Error('Approver name required.');
     const o=await this.env.CRYPTO_MEDIA.get(key);if(!o)throw Error(`Model file ${key} not found in R2.`);const spec=JSON.parse(await o.text()) as ModelSpec;new Model(spec);
