@@ -21,6 +21,43 @@ export const outcome = (pct: unknown) => (typeof pct !== 'number' || !Number.isF
 export const studyFolder = (c: Any) => `${(iso(c.startedAt) ?? '0000-00-00').slice(0, 10)}_${c.id}`;
 export const studyKey = (c: Any) => `rag/studies/${studyFolder(c)}.json`;
 export const tokenKey = (c: Any, t: Any) => `rag/tokens/${studyFolder(c)}/${slug(t.name)}_${slug(t.mint)}.json`;
+export const recordingKey = (c: Any, t: Any) => `rag/recordings/${studyFolder(c)}/${slug(t.name)}_${slug(t.mint)}.json`;
+
+/** One document per recording (the screenshots as data): every frame's price, one row per second, the key moments
+ *  (entry, partial sale, exit, peak) tied to their exact screenshot, and the vision notes taken during recording.
+ *  chunks = the token's study_chunks rows (parsed), any order. Frame paths are relative to mediaFolder. */
+export function recordingDoc(c: Any, t: Any, chunks: Any[]) {
+  const launch = t.createdAt ?? t.startedAt, folder = t.mediaPrefix ?? null;
+  const rel = (key: string) => (folder && key.startsWith(folder + '/') ? key.slice(folder.length + 1) : key);
+  const frames: { at: number; key: string; price: number | null }[] = [], vision: Any[] = [];
+  for (const ch of [...chunks].sort((a, b) => (a.startedAt ?? 0) - (b.startedAt ?? 0))) {
+    const samples = new Map<number, Any>((ch.samples ?? []).map((s: Any) => [s.index, s]));
+    const byIndex = new Map<number, Any>((ch.frames ?? []).map((f: Any) => [f.index, f]));
+    for (const f of ch.frames ?? []) { const s = samples.get(f.index); frames.push({ at: f.capturedAt, key: f.key, price: s && s.priceUsd > 0 ? s.priceUsd : null }); }
+    for (const r of ch.reviews ?? []) {
+      const f = byIndex.get(r.frame), v = r.vision;
+      if (f && v) vision.push({ sec: secs(f.capturedAt - launch), frame: rel(f.key), direction: v.direction ?? null, chartVisible: v.chartVisible ?? null, blocked: v.blocked ?? null, note: v.evidence ?? null });
+    }
+  }
+  frames.sort((a, b) => a.at - b.at);
+  const base = t.firstPriceUsd || frames.find(f => f.price)?.price || null;
+  const pct = (p: number | null) => (p && base ? r1((p / base - 1) * 100) : null);
+  const at = (ts: unknown) => { if (typeof ts !== 'number' || !frames.length) return null;   // frame at or just before a moment
+    let best = frames[0]; for (const f of frames) { if (f.at > ts) break; best = f; } return { sec: secs(ts - launch), pct: pct(best.price), frame: rel(best.key) }; };
+  const timeline: [number | null, number | null, string][] = []; let lastSec = -1;   // first frame of every second
+  for (const f of frames) { const s = Math.floor((f.at - launch) / 1000); if (s !== lastSec) { timeline.push([s, pct(f.price), rel(f.key)]); lastSec = s; } }
+  const peak = frames.reduce<typeof frames[0] | null>((b, f) => (f.price && (!b || f.price > (b.price ?? 0)) ? f : b), null);
+  const p = t.paper ?? {};
+  return {
+    type: 'recording', study: { id: c.id, startedAt: iso(c.startedAt) }, token: t.name ?? null, mint: t.mint, outcome: outcome(t.metrics?.changePct),
+    tokenDoc: tokenKey(c, t), mediaFolder: folder, frames: frames.length, secondsCovered: timeline.length,
+    // % values are from the first recorded price; sec = seconds after launch; open a frame at /api/studies/media?key=<mediaFolder>/<frame>
+    keyMoments: { firstFrame: at(frames[0]?.at), paperEntry: at(p.entryAt), paperPartialSale: at(p.partialAt), paperExit: at(p.exitAt), peak: peak ? at(peak.at) : null, lastFrame: at(frames.at(-1)?.at) },
+    paperExitReason: p.exitReason ?? p.skipReason ?? null,
+    vision,   // what the vision model saw on screen during recording
+    timeline, // [sec after launch, % from first price, frame]
+  };
+}
 
 function paperTrade(p: Any | null | undefined) {
   if (!p) return null;
@@ -43,7 +80,7 @@ export function tokenDoc(c: Any, t: Any, modelRow: Any | null = null) {
     whatWentWrong: t.paperMistake?.label ?? null, whatWentWrongFiltered: t.paperFilteredMistake?.label ?? null,
     exits: t.exits ?? null,
     // Where the screenshots of this token live (same bucket); the link opens on the dashboard after sign-in.
-    recording: { mediaFolder: t.mediaPrefix ?? null, frames: t.frameCount ?? 0, capturedSeconds: secs(t.capturedMs),
+    recording: { doc: recordingKey(c, t), mediaFolder: t.mediaPrefix ?? null, frames: t.frameCount ?? 0, capturedSeconds: secs(t.capturedMs),
       latestFrame: t.latestFrame?.key ?? null, latestFrameAt: iso(t.latestFrame?.capturedAt),
       latestFrameUrl: t.latestFrame?.key ? `/api/studies/media?key=${encodeURIComponent(t.latestFrame.key)}` : null },
     model: modelRow ? { name: modelRow.model, bought: modelRow.bought, buyProbability: r1(modelRow.buyProb), netPct: r1(modelRow.trade?.netPct),
@@ -96,7 +133,8 @@ Data exported from the study database after every study and every model run. Pap
 ## Documents
 - rag/index.json: one line per study (date, token counts, outcomes, paper totals, path of the study document).
 - rag/studies/<date>_<id>.json: one study. Totals, outcomes, best/worst, paper results, mistakes, model runs, excluded tokens, and a short line per token with the path of its token document.
-- rag/tokens/<date>_<study id>/<name>_<id>.json: one token. Outcome, peak and timing, launch facts, both paper trades, model result, price every 5 seconds.
+- rag/recordings/<date>_<study id>/<name>_<mint>.json: one recording (the screenshots as data). Key moments (paper entry, partial sale, exit, peak) with the exact frame, the vision notes seen on screen, and a timeline row per second: [sec after launch, % from first price, frame]. Open a frame at /api/studies/media?key=<mediaFolder>/<frame>.
+- rag/tokens/<date>_<study id>/<name>_<mint>.json: one token. Outcome, peak and timing, launch facts, both paper trades, model result, price every 5 seconds.
 
 ## Outcome lines
 - winner: final change above +7% over the 10-minute recording.
@@ -128,9 +166,10 @@ type Bucket = Pick<R2Bucket, 'put' | 'get'>;
 const put = (b: Bucket, key: string, body: string, type = 'application/json') => b.put(key, body, { httpMetadata: { contentType: type } });
 
 /** Every document for one study, from plain rows (used by the Worker and by scripts/rag-dump.ts). */
-export function studyFiles(c: Any, tokens: Any[], runs: Any[] = [], modelRows = new Map<string, Any>()) {
+export function studyFiles(c: Any, tokens: Any[], runs: Any[] = [], modelRows = new Map<string, Any>(), chunks = new Map<string, Any[]>()) {
   const doc = studyDoc(c, tokens, runs), key = studyKey(c);
   const files = tokens.map(t => ({ key: tokenKey(c, t), body: JSON.stringify(tokenDoc(c, t, modelRows.get(t.id) ?? null)) }));
+  for (const t of tokens) { const ch = chunks.get(t.id); if (ch?.length) files.push({ key: recordingKey(c, t), body: JSON.stringify(recordingDoc(c, t, ch)) }); }
   files.push({ key, body: JSON.stringify(doc) });
   return { files, line: indexLine(doc, key) };
 }
@@ -139,6 +178,9 @@ export const mergeIndex = (studies: Any[], line: Any) => ({ updatedAt: new Date(
 
 /** Columns the export never needs (tick tapes, chat and AI text): dropped in SQL to keep reads small. */
 export const TOKEN_SELECT = "json_remove(data,'$.tape','$.analysis','$.analysisHistory','$.chatWindows','$.chatAssociations','$.earlyWindows','$.laterOutcomes','$.candidate.raw') AS data";
+
+/** Chunk fields the recording doc needs (frames, price samples, vision verdicts), without raw model text. */
+export const CHUNK_SELECT = "json_object('startedAt',json_extract(data,'$.startedAt'),'frames',json_extract(data,'$.frames'),'samples',json_extract(data,'$.samples'),'reviews',(SELECT json_group_array(json_object('frame',json_extract(r.value,'$.frame'),'vision',json_extract(r.value,'$.vision'))) FROM json_each(data,'$.reviews') r)) AS data";
 
 /** Export one study (and all its tokens) from D1 to R2, then update the index. Returns what was written. */
 export async function exportStudy(db: D1Database, bucket: Bucket, campaignId: string) {
@@ -152,7 +194,9 @@ export async function exportStudy(db: D1Database, bucket: Bucket, campaignId: st
     const latest = runs.at(-1);
     if (latest) modelRows = new Map((await db.prepare('SELECT token_id, data FROM model_rows WHERE campaign_id=? AND model_sha=?').bind(campaignId, latest.model_sha).all<{ token_id: string; data: string }>()).results.map(r => [r.token_id, JSON.parse(r.data)]));
   } catch { /* model tables not created yet */ }
-  const { files, line } = studyFiles(c, tokens, runs, modelRows);
+  const chunks = new Map<string, Any[]>();   // one token at a time keeps Worker memory small
+  for (const t of tokens) chunks.set(t.id, (await db.prepare(`SELECT ${CHUNK_SELECT} FROM study_chunks WHERE token_id=?`).bind(t.id).all<{ data: string }>()).results.map(r => JSON.parse(r.data)));
+  const { files, line } = studyFiles(c, tokens, runs, modelRows, chunks);
   for (const f of files) await put(bucket, f.key, f.body);
   await put(bucket, 'rag/glossary.md', GLOSSARY, 'text/markdown');
   const old = await bucket.get('rag/index.json');

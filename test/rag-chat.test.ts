@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { outcome, studyFiles, mergeIndex, tokenKey, tokenDoc } from '../src/rag-export';
+import { outcome, studyFiles, mergeIndex, tokenKey, tokenDoc, recordingDoc } from '../src/rag-export';
 import { buildChat, askAstra, CHAT_CAP_USD } from '../src/astra-chat';
 // @ts-ignore browser module without types
 import { turnHtml, ragStatusText } from '../public/chat.js';
@@ -24,6 +24,23 @@ test('rag export: outcome lines, keys, study totals leave excluded tokens out, r
   const d = tokenDoc(c, toks[0]);
   assert.equal(d.paperAllTokens!.heldSeconds, 74.6); assert.equal(d.recording.frames, 338); assert.match(d.recording.latestFrameUrl!, /^\/api\/studies\/media\?key=studies%2Fc1/);
   assert.deepEqual(d.priceEvery5s, [[10, 0], [60, 20]]);
+});
+
+test('recording doc: every frame priced, key moments tied to the exact screenshot, vision notes kept', () => {
+  const L = 1_000_000, t = { id: 'c1:m1', name: 'Holder', mint: 'M1abc', createdAt: L, mediaPrefix: 'studies/c1/M1abc', firstPriceUsd: 1,
+    metrics: { changePct: 150 }, paper: { entryAt: L + 32_000, exitAt: L + 61_500, exitReason: 'trail' } };
+  const f = (i: number, s: number) => ({ index: i, capturedAt: L + s * 1000, key: `studies/c1/M1abc/0/${i}.jpg` });
+  const chunk = { startedAt: L, frames: [f(0, 30), f(1, 30.5), f(2, 32), f(3, 61), f(4, 90)],
+    samples: [1, 1.1, 0.9, 2.5, 2].map((p, i) => ({ index: i, priceUsd: p })), reviews: [{ frame: 3, vision: { direction: 'up', evidence: 'green spike' } }] };
+  const d = recordingDoc(c, t, [chunk]);
+  assert.equal(d.frames, 5); assert.equal(d.secondsCovered, 4, 'one timeline row per second (30 s has two frames)');
+  assert.deepEqual(d.timeline[0], [30, 0, '0/0.jpg']);
+  assert.deepEqual(d.keyMoments.paperEntry, { sec: 32, pct: -10, frame: '0/2.jpg' });
+  assert.deepEqual(d.keyMoments.paperExit, { sec: 61.5, pct: 150, frame: '0/3.jpg' }, 'frame at or just before the exit');
+  assert.equal(d.keyMoments.peak!.frame, '0/3.jpg'); assert.equal(d.vision[0].note, 'green spike'); assert.equal(d.vision[0].sec, 61);
+  const { files } = studyFiles(c, [t], [], new Map(), new Map([[t.id, [chunk]]]));
+  assert.ok(files.some(x => x.key === 'rag/recordings/2026-09-26_c1/Holder_M1abc.json'));
+  assert.equal(tokenDoc(c, t).recording.doc, 'rag/recordings/2026-09-26_c1/Holder_M1abc.json');
 });
 
 test('rag export: index replaces a study in place and stays newest first', () => {
