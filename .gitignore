@@ -6,3 +6,10 @@ node_modules/
 .firecrawl/
 dist/
 artifacts/
+__pycache__/
+*.pyc
+.venv/
+~$*
+.DS_Store
+CLAUDE_HANDOFF.md
+node_modules
