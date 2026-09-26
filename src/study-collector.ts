@@ -6,7 +6,8 @@ import {fetchNewLaunches, LAUNCH_POLL_MS} from './launch-feed';
 import {paperTrade, summarizePaper, tunePaper, validRules, passesFilter, classifyTrade, mistakeSummary, PAPER_RULES, PAPER_FILTERS, type PaperTrade, type PaperRules, type TuneToken, type Mistake} from './paper-trader';
 import {freshLaunch, type Candidate} from './research-model';
 import {Model, type ModelSpec} from './model';
-import {stepJob, newJob, d1Deps, MODEL_SCHEMA, type ModelJob, type ModelPointer, type RunToken} from './model-runner';
+import {stepJob, newJob, d1Deps, runKey, MODEL_SCHEMA, type ModelJob, type ModelPointer, type RunToken, type RunFile} from './model-runner';
+import {reviewRun} from './astra-review';
 import {summarizeSamples, analyzeStudy, aggregateStudies, usageFromResponse, compactStudyInput, compactAggregateInput, reviewMistakes, compareWinnersLosers, priceSeries, exitMetrics, outcomeLabel, launchInfoFromCoin, isTerminalLaunch, COLLECTIVE_PROMPT, type LaunchInfo} from './study-analysis';
 
 type Chunk=Awaited<ReturnType<typeof observe>> & {frames:{index:number;capturedAt:number;key:string}[];chatSnapshots?:ChatSnapshot[]};
@@ -107,7 +108,12 @@ export class StudyCoordinator extends StudyStore{
       if(r==='finished'){jobs.shift();await this.afterModelRun(job);}
       this.write('modelJobs',jobs);if(jobs.length)await this.ctx.storage.setAlarm(r==='wait'?jobs[0].dueAt:Date.now()+1000);}
     catch(error){job.errors=[...job.errors,error instanceof Error?error.message.slice(0,200):'Model step failed'].slice(-20);if(job.errors.length>=20)jobs.shift();this.write('modelJobs',jobs);if(jobs.length)await this.ctx.storage.setAlarm(Date.now()+30000);}}
-  private async afterModelRun(_job:ModelJob){}
+  // Astra reviews the whole run (summary + a row per token); stored next to the run, never applied automatically.
+  private async afterModelRun(job:ModelJob){
+    const o=await this.env.CRYPTO_MEDIA.get(runKey(job.campaignId,job.model.sha));if(!o)return;
+    const review=await reviewRun(this.env.AI,JSON.parse(await o.text()) as RunFile);
+    await this.env.CRYPTO_MEDIA.put(runKey(job.campaignId,job.model.sha).replace(/\.json$/,'.review.json'),JSON.stringify(review),{httpMetadata:{contentType:'application/json'}});
+    await this.env.CRYPTO_STUDY.prepare('UPDATE model_runs SET review=? WHERE campaign_id=? AND model_sha=?').bind(JSON.stringify(review),job.campaignId,job.model.sha).run();}
   async alarm(){const c=this.campaign();if(!c||c.status!=='running'){await this.modelStep();return;}await this.ctx.storage.setAlarm(Date.now()+90000);try{
       for(const pending of c.pending??[]){if(!this.isRunning(c.id))return;await this.saveToken(pending);await this.env.RECORDERS.getByName(pending.id).initialize(pending);}
       c.pending=[];await this.saveCampaign(c);

@@ -30,7 +30,8 @@ function harness(options={}){
     './study-chat':{ingestChat:async(prev,snap)=>({mint:snap.mint,observations:[...(prev?.observations??[])],checks:[]}),summarizeChatAsOf:(st,start,seconds)=>({seconds,availability:'observed-empty',uniqueComments:0,sentiment:{positiveComments:0,negativeComments:0}}),wordMovementAssociations:()=>({matchedComments:0,terms:[]})},
     './research-model':{freshLaunch:c=>now-c.createdAt<=60000},
     './model':{Model:class{constructor(spec){this.spec=spec;}}},
-    './model-runner':{stepJob:async()=>'finished',newJob:(campaignId,model,tokens,now)=>({campaignId,model,dueAt:now,queuedAt:now,done:0,total:tokens.length,errors:[]}),d1Deps:()=>({}),MODEL_SCHEMA:[]},
+    './model-runner':{stepJob:async()=>'finished',newJob:(campaignId,model,tokens,now)=>({campaignId,model,dueAt:now,queuedAt:now,done:0,total:tokens.length,errors:[]}),d1Deps:()=>({}),MODEL_SCHEMA:[],runKey:(c,s)=>`runs/${c}/${s}.json`},
+    './astra-review':{reviewRun:async()=>({review:{summary:'ok'}})},
     './study-analysis':{reviewMistakes:async()=>({lessons:null,usage:{estimatedUsd:0},error:null}),compactStudyInput:x=>x,compactAggregateInput:x=>x,compareWinnersLosers:()=>({features:[]}),priceSeries:()=>[],exitMetrics:()=>({}),outcomeLabel:()=>'unscored',launchInfoFromCoin:()=>null,isTerminalLaunch:()=>false,COLLECTIVE_PROMPT:'collective',summarizeSamples:()=>({classification:'flat'}),analyzeStudy:async()=>({analysis:{},usage:{estimatedUsd:0},error:null}),aggregateStudies:rows=>({all:{count:rows.length}}),usageFromResponse:()=>({estimatedUsd:0})},
   };
   const source=ts.transpileModule(readFileSync(new URL('../src/study-collector.ts',import.meta.url),'utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText;
