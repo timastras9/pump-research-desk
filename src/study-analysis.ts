@@ -83,6 +83,29 @@ export function compareWinnersLosers(rows:AggregateRow[]) {
   ];
   return {winnerRule:`final change > ${WINNER_CHANGE_PCT}%`,tankedRule:`final change <= ${TANKED_CHANGE_PCT}% (subset of losers)`,winners:winners.length,losers:losers.length,tanked:tanked.length,unscored:rows.length-scored.length,columns:['feature','winners','losers','tanked'],features};
 }
+// Paper-trade friction per side: 1.25% protocol fee plus assumed 2% slippage.
+export const COST_PER_SIDE=0.0325;
+const validSorted=(samples:Sample[])=>samples.filter((s):s is {time:number;priceUsd:number}=>s.priceUsd!==null&&Number.isFinite(s.priceUsd)&&s.priceUsd>0&&Number.isFinite(s.time)).sort((a,b)=>a.time-b.time);
+// Compact chart path: [seconds since origin, % change from first observed price], last price per bucket.
+export function priceSeries(samples:Sample[],originAt:number,bucketMs=5000):[number,number][] {
+  const v=validSorted(samples);if(!v.length)return [];
+  const base=v[0].priceUsd,out=new Map<number,number>();
+  for(const s of v)out.set(Math.floor((s.time-originAt)/bucketMs),s.priceUsd);
+  return [...out].map(([b,p])=>[Math.round(b*bucketMs/1000),Number(((p/base-1)*100).toFixed(1))]);
+}
+// How fast the token falls after its peak and what a trailing stop from first sight would have kept.
+export function exitMetrics(samples:Sample[],trailPct=20) {
+  const v=validSorted(samples);
+  if(v.length<2)return {peakToDrop20Ms:null,peakToDrop50Ms:null,trailingStopPct:null,trailingStopExitMs:null,trailPct};
+  let peak=v[0];for(const s of v)if(s.priceUsd>peak.priceUsd)peak=s;
+  const after=v.filter(s=>s.time>=peak.time);
+  const drop=(pct:number)=>{const hit=after.find(s=>s.priceUsd<=peak.priceUsd*(1-pct/100));return hit?hit.time-peak.time:null;};
+  let high=v[0].priceUsd,exit=v.at(-1)!;
+  for(const s of v){high=Math.max(high,s.priceUsd);if(s.priceUsd<=high*(1-trailPct/100)){exit=s;break;}}
+  const trailingStopPct=((exit.priceUsd*(1-COST_PER_SIDE))/(v[0].priceUsd*(1+COST_PER_SIDE))-1)*100;
+  return {peakToDrop20Ms:drop(20),peakToDrop50Ms:drop(50),trailingStopPct:Number(trailingStopPct.toFixed(2)),trailingStopExitMs:exit.time-v[0].time,trailPct};
+}
+export function outcomeLabel(changePct:number|null|undefined){return changePct==null||!Number.isFinite(changePct)?'unscored':changePct>WINNER_CHANGE_PCT?'winner':changePct<=TANKED_CHANGE_PCT?'tanked':'loser';}
 function distribution(values:(number|null)[]) {
   const v=values.filter((x):x is number=>x!==null&&Number.isFinite(x)).sort((a,b)=>a-b);
   return {count:v.length,min:v[0]??null,median:v.length?(v[Math.floor((v.length-1)/2)]+v[Math.floor(v.length/2)])/2:null,max:v.at(-1)??null};
