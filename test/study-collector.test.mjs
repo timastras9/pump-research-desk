@@ -19,12 +19,13 @@ function harness(options={}){
   const env={CRYPTO_STUDY:db,CRYPTO_MEDIA:{put:async()=>{}},AI:{run:async()=>({})}};
   class Clock extends Date{static now(){return now;}}
   const candidate={mint:'123456789ABCDEFGHJKLMNPQRSTUVWXYZabcd',name:'test',group:'new',createdAt:now,detectedAt:now,firstSeenAt:now,raw:{},marketCapUsd:null,athUsd:null,volume24hUsd:null,traders:null,transactions:null};
+  globalThis.fetch=async()=>({ok:false,json:async()=>({})});
   const mocks={
     'cloudflare:workers':{DurableObject:class {constructor(ctx,env){this.ctx=ctx;this.env=env;}}},
     './observer':{browserCapacity:async()=>({maxConcurrentSessions:options.capacity??21,activeSessions:[],allowedBrowserAcquisitions:20,timeUntilNextAllowedBrowserAcquisition:0}),scanExplore:async()=>{scans++;return {candidates:options.candidates??[candidate],errors:[],browserDurationMs:10};},observe:async(_env,_mint,id,_seconds,_assumptions,save)=>{captures++;if(options.observeHook)await options.observeHook(_mint);const frame={index:0,captureStartedAt:now,capturedAt:now,screenshotMs:0,image:'YQ==',text:'',priceUsd:1,priceRaw:'$1',priceMode:'Price',priceReadAt:now};await save(frame);return {id,startedAt:now,samples:[frame],reviews:[],measurements:{durationMs:1000},browserDurationMs:1100,usage:[],failure:null};}},
     './study-features':{compareEarlyWithLater:()=>({early:[],laterOutcomes:[]})},
     './research-model':{freshLaunch:c=>now-c.createdAt<=60000},
-    './study-analysis':{compactStudyInput:x=>x,compactAggregateInput:x=>x,summarizeSamples:()=>({classification:'flat'}),analyzeStudy:async()=>({analysis:{},usage:{estimatedUsd:0},error:null}),aggregateStudies:rows=>({all:{count:rows.length}}),usageFromResponse:()=>({estimatedUsd:0})},
+    './study-analysis':{compactStudyInput:x=>x,compactAggregateInput:x=>x,compareWinnersLosers:()=>({features:[]}),launchInfoFromCoin:()=>null,isTerminalLaunch:()=>false,COLLECTIVE_PROMPT:'collective',summarizeSamples:()=>({classification:'flat'}),analyzeStudy:async()=>({analysis:{},usage:{estimatedUsd:0},error:null}),aggregateStudies:rows=>({all:{count:rows.length}}),usageFromResponse:()=>({estimatedUsd:0})},
   };
   const source=ts.transpileModule(readFileSync(new URL('../src/study-collector.ts',import.meta.url),'utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText;
   const exports={};new Function('require','exports','Date',source)(name=>{if(!mocks[name])throw Error(`Unexpected dependency ${name}`);return mocks[name];},exports,Clock);
@@ -52,4 +53,12 @@ test('each failed token has bounded attempts and exclusions retain evidence',asy
 });
 test('capacity skips explicitly count tokens the study could not admit',async()=>{
  const candidates=Array.from({length:5},(_,i)=>({mint:`mint${i}`,name:`token${i}`,group:'new',createdAt:1_800_000_000_000,raw:{}}));const h=harness({candidates});const c=await h.coordinator.start({maxTokens:5,concurrency:2});await h.coordinator.alarm();const d=await h.coordinator.detail(c.id);assert.equal(d.tokens.length,2);assert.equal(d.campaign.skippedCapacity,3);assert.equal(d.campaign.seenCount,5);
+});
+test('launch filters skip website launches and re-check tokens below the minimum market cap',async()=>{
+ const candidates=[{mint:'lowcap',name:'low',group:'new',createdAt:1_800_000_000_000,raw:{},marketCapUsd:3400},{mint:'webcap',name:'web',group:'new',createdAt:1_800_000_000_000,raw:{},marketCapUsd:9000}];
+ const h=harness({candidates});const c=await h.coordinator.start({maxTokens:5,concurrency:3,minMarketCapUsd:5000,launchFilter:'terminal'});
+ assert.equal(c.minMarketCapUsd,5000);assert.equal(c.launchFilter,'terminal');await h.coordinator.alarm();
+ const d=await h.coordinator.detail(c.id);assert.equal(d.tokens.length,0);assert.equal(d.campaign.skippedFilter,1);
+ const s=await h.coordinator.status();assert.equal(s.campaign.seenCount,1);
+ await assert.rejects(harness().coordinator.start({minMarketCapUsd:-1}),/Minimum market cap/);
 });

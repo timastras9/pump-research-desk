@@ -24,7 +24,7 @@ let timer=null;
 async function refresh(){clearTimeout(timer);try{const running=render(await api('/status'));timer=setTimeout(refresh,running?5000:30000);}catch(e){$('study-summary').textContent=e.message;timer=setTimeout(refresh,30000);}}
 async function act(fn){$('study-start').disabled=$('study-stop').disabled=true;try{await fn();}catch(e){$('study-summary').textContent=e.message;}await refresh();}
 if(typeof document!=='undefined'&&$('study-panel')){
- $('study-form').addEventListener('submit',e=>{e.preventDefault();act(()=>api('/start',{maxTokens:Number($('study-max').value),concurrency:Number($('study-concurrency').value)}));});
+ $('study-form').addEventListener('submit',e=>{e.preventDefault();act(()=>api('/start',{maxTokens:Number($('study-max').value),concurrency:Number($('study-concurrency').value),minMarketCapUsd:Number($('study-min-cap').value)||0,launchFilter:$('study-launch').value}));});
  $('study-stop').addEventListener('click',()=>act(()=>api('/stop',{})));
  refresh();
 }
