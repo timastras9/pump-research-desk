@@ -64,6 +64,15 @@ test('labelTrade: skipped launch with no profitable exit is a correct skip; flat
   assert.equal(feasibleFills(p, 10, eng).length, end - 10);
 });
 
+test('live feasibility: a buy decision before our feed saw the token is flagged and counted', () => {
+  const l = fx.launches.find((x: any) => x.expect.bought)!, d = l.expect.decision_t;
+  assert.equal(modelRow(model, l, d - 3).liveFeasible, true, 'seen 3 s before the decision');
+  assert.equal(modelRow(model, l, d + 20).liveFeasible, false, 'seen 20 s after the decision: not tradable live');
+  assert.equal(modelRow(model, l).liveFeasible, null, 'unknown when the seen time is missing');
+  const s = summarizeRows([modelRow(model, l, d - 3), modelRow(model, l, d + 20)]);
+  assert.equal(s.latency.tradesLiveFeasible, 0.5); assert.equal(s.latency.tradesWithSeenTime, 2); assert.equal(s.latency.seenAgeS.n, 2);
+});
+
 test('run summary: model vs rules v3, label counts, timing stats', () => {
   const rows = fx.launches.map((l: any) => modelRow(model, l));
   const s = summarizeRows(rows);

@@ -91,7 +91,7 @@ export class StudyCoordinator extends StudyStore{
   // ---- trained model: paper-trade every finished run with the active model (model-runner.ts); owner picks the model ----
   private schemaReady=false;
   private async modelSchema(){if(!this.schemaReady){for(const s of MODEL_SCHEMA)await this.env.CRYPTO_STUDY.prepare(s).run();this.schemaReady=true;}}
-  private async runTokens(campaignId:string):Promise<RunToken[]>{const rows=await this.env.CRYPTO_STUDY.prepare('SELECT data FROM study_tokens WHERE campaign_id=? ORDER BY started_at').bind(campaignId).all<{data:string}>();return rows.results.map(r=>JSON.parse(r.data) as Token).map(t=>({id:t.id,mint:t.mint,name:t.name,createdAt:t.createdAt??null}));}
+  private async runTokens(campaignId:string):Promise<RunToken[]>{const rows=await this.env.CRYPTO_STUDY.prepare('SELECT data FROM study_tokens WHERE campaign_id=? ORDER BY started_at').bind(campaignId).all<{data:string}>();return rows.results.map(r=>JSON.parse(r.data) as Token).map(t=>({id:t.id,mint:t.mint,name:t.name,createdAt:t.createdAt??null,seenAt:t.candidate?.firstSeenAt??null}));}
   modelState(){return {active:this.read<ModelPointer>('activeModel')??null,history:this.read<ModelPointer[]>('modelHistory')??[],jobs:this.read<ModelJob[]>('modelJobs')??[]};}
   async modelOverview(){await this.modelSchema();
     const runs=(await this.env.CRYPTO_STUDY.prepare('SELECT campaign_id,model_sha,created_at,summary,review FROM model_runs ORDER BY created_at DESC LIMIT 100').all<{campaign_id:string;model_sha:string;created_at:number;summary:string;review:string|null}>()).results

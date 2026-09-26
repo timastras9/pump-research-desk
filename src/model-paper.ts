@@ -10,6 +10,7 @@ const CRASH_PCT = 20, CRASH_H = 10;   // same crash definition as research/train
 export type Feedback = { buyLabel: string; sellLabels: string[]; loserReason: string | null; netPct: number; realizedExitGrossPct: number | null; bestFeasibleGrossPct: number; regretPp: number };
 export type ModelRow = {
   mint: string; name?: string; model: string; modelSha: string; labeler: string;
+  seenAgeS: number | null; liveFeasible: boolean | null;   // when our feed first saw the token; could the buy decision really have been made then?
   decisionT: number | null; bought: boolean; buyProb: number | null; entryCrashProb: number | null; entryT: number | null;
   trade: { fills: Fill[]; reasons: string[]; netPct: number; exitGrossPct: number; exitDecisionSec: number; exitFillSec: number } | null;
   shadow: { netPct: number; exitDecisionSec: number } | null;    // skipped launch: what the model's seller would have done (not a trade)
@@ -76,10 +77,10 @@ function crashStart(price: number[], e: number, eng: ModelSpec['engine']): numbe
   return null;
 }
 
-export function modelRow(model: Model, l: Launch & { name?: string }): ModelRow {
+export function modelRow(model: Model, l: Launch & { name?: string }, seenAgeS: number | null = null): ModelRow {
   const spec = model.spec, eng = spec.engine, p = l.price;
-  const base = { mint: l.mint, name: l.name, model: spec.name, modelSha: spec.sha256, labeler: LABELER_VERSION };
   const d = buyDecisionTime(p, eng);
+  const base = { mint: l.mint, name: l.name, model: spec.name, modelSha: spec.sha256, labeler: LABELER_VERSION, seenAgeS, liveFeasible: seenAgeS == null || d == null ? null : d >= seenAgeS };
   if (d == null) return { ...base, decisionT: null, bought: false, buyProb: null, entryCrashProb: null, entryT: null, trade: null, shadow: null, actual: null, predictedVsActual: null, feedback: null, rulesV3: null };
   const e = d + eng.latency_s, stop = end(e, eng), pe = p[e];
   const buyProb = model.buyProb(l, d), entryCrashProb = model.entryCrashProb(l, d), ect = spec.entry_crash.threshold;
@@ -124,8 +125,10 @@ export function summarizeRows(rows: ModelRow[], sizeUsd = 2) {
   const pva = traded.map(r => r.predictedVsActual!);
   const pick = (k: keyof NonNullable<ModelRow['predictedVsActual']>) => pva.map(x => x[k]).filter((v): v is number => v != null);
   const stat = (a: number[]) => ({ n: a.length, mean: mean(a) == null ? null : r2(mean(a)!), median: median(a) == null ? null : r2(median(a)!) });
+  const seen = rows.map(r => r.seenAgeS).filter((v): v is number => v != null), known = traded.filter(r => r.liveFeasible != null);
   return {
     tokens: rows.length, evaluated: rows.filter(r => r.decisionT != null).length,
+    latency: { seenAgeS: stat(seen), tradesLiveFeasible: known.length ? r2(known.filter(r => r.liveFeasible).length / known.length) : null, tradesWithSeenTime: known.length },
     model: { trades: traded.length, avgPct: mean(nets) == null ? null : r2(mean(nets)!), medianPct: median(nets) == null ? null : r2(median(nets)!),
       winRate: traded.length ? r2(nets.filter(x => x > 0).length / traded.length) : null, shareWorseThan30: traded.length ? r2(nets.filter(x => x <= -30).length / traded.length) : null,
       totalUsd: r2(nets.reduce((a, b) => a + b, 0) / 100 * sizeUsd) },

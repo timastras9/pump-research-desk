@@ -10,7 +10,7 @@ export const BATCH = 3;                          // tokens per alarm step (each 
 
 export type ModelPointer = { key: string; name: string; sha: string; activatedAt: number; by: string };
 export type ModelJob = { campaignId: string; model: ModelPointer; dueAt: number; queuedAt: number; done: number; total: number | null; errors: string[] };
-export type RunToken = { id: string; mint: string; name: string; createdAt: number | null };
+export type RunToken = { id: string; mint: string; name: string; createdAt: number | null; seenAt?: number | null };
 export type RunFile = { format: 'pump-model-run-v1'; campaignId: string; model: { name: string; sha: string }; engine: ModelSpec['engine']; guard: ModelSpec['guard']; createdAt: number; summary: ReturnType<typeof summarizeRows>; rows: (ModelRow & { tokenId: string })[] };
 
 export type RunnerDeps = {
@@ -44,7 +44,7 @@ export async function stepJob(job: ModelJob, d: RunnerDeps, batch = BATCH): Prom
     else {
       const launch = await d.fetch(t.mint, t.createdAt);
       if (!launch) { job.errors = [...job.errors, `${t.name || t.mint}: candles unavailable`].slice(-20); row = { ...emptyRow(model, t), tokenId: t.id }; }
-      else row = { ...modelRow(model, { ...launch, name: t.name || launch.name }), tokenId: t.id };
+      else row = { ...modelRow(model, { ...launch, name: t.name || launch.name }, t.seenAt != null ? Math.max(0, (t.seenAt - t.createdAt) / 1000) : null), tokenId: t.id };
     }
     await d.saveRow(job.campaignId, job.model.sha, t.id, row); have.set(t.id, row);
   }
@@ -57,7 +57,7 @@ export async function stepJob(job: ModelJob, d: RunnerDeps, batch = BATCH): Prom
 }
 
 function emptyRow(model: Model, t: RunToken): ModelRow {
-  return { mint: t.mint, name: t.name, model: model.spec.name, modelSha: model.spec.sha256, labeler: 'feedback-v1', decisionT: null, bought: false, buyProb: null, entryCrashProb: null, entryT: null,
+  return { mint: t.mint, name: t.name, model: model.spec.name, modelSha: model.spec.sha256, labeler: 'feedback-v1', seenAgeS: null, liveFeasible: null, decisionT: null, bought: false, buyProb: null, entryCrashProb: null, entryT: null,
     trade: null, shadow: null, actual: null, predictedVsActual: null, feedback: null, rulesV3: null };
 }
 

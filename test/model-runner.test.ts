@@ -42,6 +42,13 @@ test('evaluates in batches, then writes one run file with a row per token and a 
   assert.equal(run.rows.find(r => r.tokenId === 'nocreated')!.decisionT, null, 'token without a launch time is kept as an empty row');
 });
 
+test('the feed seen time is passed through as seconds after launch', async () => {
+  const f = fakes(Date.now()), job = newJob('c1', pointer, tokens, 0); job.dueAt = 0;
+  f.deps.tokens = async () => [{ ...tokens[0], seenAt: tokens[0].createdAt + 7500 }];
+  await stepJob(job, f.deps, 5);
+  assert.equal(f.rows.get('t0').seenAgeS, 7.5);
+});
+
 test('a failed fetch is recorded, never retried forever, and never blocks the run', async () => {
   const f = fakes(Date.now(), new Set([tokens[1].mint])), job = newJob('c1', pointer, tokens, 0); job.dueAt = 0;
   let s; do s = await stepJob(job, f.deps, 10); while (s === 'more');

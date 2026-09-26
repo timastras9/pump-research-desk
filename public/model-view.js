@@ -37,7 +37,7 @@ export function runDetailHtml(d){
  const stat=(label,x,unit)=>`<tr><td>${esc(label)}</td><td>${esc(x.n)}</td><td>${num(x.mean)}${unit}</td><td>${num(x.median)}${unit}</td></tr>`;
  const labels=Object.entries(s.labels||{}).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`${esc(k.replace(/_/g,' '))} ${esc(v)}`).join(' · ');
  const rows=[...run.rows].filter(r=>r.decisionT!=null).sort((a,b)=>Number(b.bought)-Number(a.bought)||(b.actual?.peakPct??0)-(a.actual?.peakPct??0)).map(r=>{const e=r.entryT??0,rel=x=>x==null?null:x-e,p=r.predictedVsActual||{},a=r.actual;
-  return `<tr><td>${esc(r.name||r.mint.slice(0,8))}</td><td>${r.bought?'buy':'<span class="muted">skip</span>'}</td><td>${num(r.buyProb,2)}</td><td>${num(r.entryCrashProb,2)}</td>
+  return `<tr><td>${esc(r.name||r.mint.slice(0,8))}</td><td>${r.seenAgeS==null?'—':num(r.seenAgeS,0)+' s'}${r.liveFeasible===false?' <span class="c-tanked" title="buy decision came before we saw the token">late</span>':''}</td><td>${r.bought?'buy':'<span class="muted">skip</span>'}</td><td>${num(r.buyProb,2)}</td><td>${num(r.entryCrashProb,2)}</td>
 <td class="${cls(r.trade?.netPct)}">${r.trade?pct(r.trade.netPct):r.shadow?`<span class="muted">(${pct(r.shadow.netPct)})</span>`:'—'}</td><td>${r.trade?sec(rel(r.trade.exitDecisionSec))+' · '+esc([...new Set(r.trade.reasons)].join(', ')):'—'}</td>
 <td>${a?pct(a.peakPct)+' @ '+sec(rel(a.peakSec)):'—'}</td><td>${a?pct(a.best.grossPct)+' @ '+sec(rel(a.best.decisionSec)):'—'}</td>
 <td>${sec(p.exitVsBestSec)}</td><td>${p.missVsPeakPts==null?'—':num(p.missVsPeakPts)+' pts'}</td><td>${p.crashPredictedSec==null?'—':sec(rel(p.crashPredictedSec))}${a?.crashStartSec!=null?' / '+sec(rel(a.crashStartSec)):''}</td>
@@ -52,7 +52,8 @@ export function runDetailHtml(d){
 <h3>Prediction vs actual: timing and peak</h3><div class="table-scroll"><table><thead><tr><th>Measure (bought tokens)</th><th>n</th><th>Mean</th><th>Median</th></tr></thead><tbody>
 ${stat('Exit decision vs best reachable exit (− = sold early)',t.exitVsBestSec,' s')}${stat('Exit fill vs peak second',t.exitVsPeakSec,' s')}${stat('Missed vs peak',t.missVsPeakPts,' pts')}${stat('Missed vs best reachable exit',t.missVsBestPts,' pts')}${stat('Crash warning vs actual crash start (− = early)',t.crashPredictedVsActualSec,' s')}</tbody></table></div>
 <p class="small"><strong>Feedback labels:</strong> ${labels||'none'}</p>
+${s.latency?`<p class="small"><strong>Detection latency:</strong> first seen ${num(s.latency.seenAgeS.median)} s after launch (median, mean ${num(s.latency.seenAgeS.mean)} s) · ${s.latency.tradesLiveFeasible==null?'—':Math.round(s.latency.tradesLiveFeasible*100)+'%'} of model trades were decided after we could have seen the token (live-feasible).</p>`:''}
 <h3>Astra's review</h3>${astra}
 <h3>Every token</h3><p class="muted small">Seconds are after entry. Skipped tokens show the model's shadow result in brackets (not a trade). Crash column: model warning / actual crash start.</p>
-<div class="table-scroll"><table><thead><tr><th>Token</th><th>Model</th><th>Buy score</th><th>Crash risk</th><th>Net</th><th>Exit · why</th><th>Peak</th><th>Best reachable exit</th><th>Exit vs best</th><th>Missed vs peak</th><th>Crash</th><th>Feedback</th><th>Rules v3</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+<div class="table-scroll"><table><thead><tr><th>Token</th><th>Seen</th><th>Model</th><th>Buy score</th><th>Crash risk</th><th>Net</th><th>Exit · why</th><th>Peak</th><th>Best reachable exit</th><th>Exit vs best</th><th>Missed vs peak</th><th>Crash</th><th>Feedback</th><th>Rules v3</th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
