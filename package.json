@@ -1,0 +1,1 @@
+{"name":"pump-research-desk","version":"0.1.0","private":true,"type":"module","scripts":{"dev":"wrangler dev","deploy":"wrangler deploy","check":"tsc --noEmit","test":"tsx --test test/*.test.ts","types":"wrangler types","build":"wrangler deploy --dry-run"},"devDependencies":{"wrangler":"4.141.0","typescript":"~5.9.3","tsx":"^4.20.0","@types/node":"^22.0.0"}}
