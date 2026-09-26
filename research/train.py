@@ -24,6 +24,20 @@ BREAKEVEN = ((1 + E.COST_PER_SIDE) / (1 - E.COST_PER_SIDE) - 1) * 100
 STOP = -0.25                 # guardrail on every learned seller
 MIN_COVERAGE = 0.10          # a BUY threshold must still take at least 10% of validation launches
 
+CRASH_PCT, CRASH_H = 20, 10             # SELL-side crash: price falls 20%+ below now within 10 s after a sale could fill
+ENTRY_CRASH_PCT, ENTRY_CRASH_H = 30, 10 # BUY-side crash: price falls 30%+ below entry within 10 s of entry
+MAX_BIG_LOSS_SHARE = 0.10               # Tim: no 30% losses. Validation choices must keep trades at <= -30% net to 10% or fewer
+EARLY_S = 5                             # Tim: below entry within 5 s -> get out (55.7% of those crash 30% within 30 s)
+
+def crash_label(price, t, end, pct=CRASH_PCT, h=CRASH_H) -> float:
+    """1 if, after deciding at t, the price falls pct% below price[t] before t + latency + h. Uses the future: label only."""
+    w = price[t + 1:min(t + E.LATENCY_S + h, end) + 1]
+    return float(len(w) > 0 and w.min() <= price[t] * (1 - pct / 100))
+
+def entry_crash_label(price, e, end, pct=ENTRY_CRASH_PCT, h=ENTRY_CRASH_H) -> float:
+    w = price[e + 1:min(e + h, end) + 1]
+    return float(len(w) > 0 and w.min() <= price[e] * (1 - pct / 100))
+
 def FRACTION(votes, members):
     """Share of ensemble members voting sell -> HOLD / SELL 25% / 50% / 100% of the remaining position."""
     return 0.0 if votes == 0 else 1.0 if votes >= 0.75 * members else 0.5 if votes >= 0.5 * members else 0.25
@@ -106,12 +120,14 @@ def run(eps, buy_ok, sell_policy):
     return out
 
 total = lambda trades: sum(tr.net_return_pct() for _, tr in trades)
+big_loss_share = lambda trades: float(np.mean([tr.net_return_pct() <= -30 for _, tr in trades])) if trades else 0.0
 
 def report(trades, candidates, blocks=10, seed=0):
     """Engine summary + per-candidate P&L, time-block bootstrap CI, holding time and exit quality vs the peak."""
     r = [tr.net_return_pct() for _, tr in trades]; s = E.summarize(r)
     if not trades: return s
     s['pnl_per_candidate_pct'] = round(sum(r) / max(1, candidates), 2)
+    s['share_worse_than_-30'] = round(big_loss_share(trades), 3)
     k = min(blocks, len(r)); groups = np.array_split(np.array(r), k); rng = np.random.default_rng(seed)
     boot = [np.concatenate([groups[i] for i in rng.integers(0, k, k)]).mean() for _ in range(1000)]
     s['block_ci95'] = [round(float(np.percentile(boot, 2.5)), 2), round(float(np.percentile(boot, 97.5)), 2)]
@@ -173,13 +189,35 @@ def main():
     def sell_state(ep, e, t):
         pe = ep.price[e]; return np.append(row(ep, t), [(ep.price[t] / pe - 1) * 100, (ep.price[e:t + 1].max() / pe - 1) * 100, t - e])
     def sell_xy(E_):
-        X, y = [], []
+        X, y, yc = [], [], []
         for ep in E_:
             e = E.buy_decision_time(ep) + E.LATENCY_S; end = min(E.WINDOW_S, e + E.HOLD_S); tgt, kind = target_exit(ep, e)
-            for t in range(e + 1, end, a.step): X.append(sell_state(ep, e, t)); y.append(float(kind == 'loser' or t >= tgt))
-        return np.array(X), np.array(y, dtype=np.float32)
-    Xs, ys = sell_xy(tr_eps); Xsv, ysv = sell_xy(ca_eps); ss = Scaler().fit(Xs)
+            for t in range(e + 1, end, a.step):
+                X.append(sell_state(ep, e, t)); y.append(float(kind == 'loser' or t >= tgt)); yc.append(crash_label(ep.price, t, end))
+        return np.array(X), np.array(y, dtype=np.float32), np.array(yc, dtype=np.float32)
+    Xs, ys, ycs = sell_xy(tr_eps); Xsv, ysv, ycsv = sell_xy(ca_eps); ss = Scaler().fit(Xs)
     stop_model, _ = fit(mlp(Xs.shape[1], (64, 32)), ss(Xs), torch.tensor(ys), ss(Xsv), torch.tensor(ysv), nn.BCEWithLogitsLoss(), epochs=25)
+
+    # ---------- CRASH predictors (spreadsheet ask: see the crash coming) ----------
+    # SELL side, every second of a position: will it fall 20%+ within 10 s after a sale could fill? Same state as the stop model.
+    cpos = float(ycs.mean())
+    crash_model, _ = fit(mlp(Xs.shape[1], (64, 32)), ss(Xs), torch.tensor(ycs), ss(Xsv), torch.tensor(ycsv),
+                         nn.BCEWithLogitsLoss(pos_weight=torch.tensor((1 - cpos) / max(cpos, 1e-6))), epochs=25)
+    # BUY side, at the buy decision: will it fall 30%+ below entry within 10 s of entry? Same inputs as the BUY model.
+    def entry_crash_y(E_):
+        return np.array([entry_crash_label(ep.price, E.buy_decision_time(ep) + E.LATENCY_S, min(E.WINDOW_S, E.buy_decision_time(ep) + E.LATENCY_S + E.HOLD_S)) for ep in E_], dtype=np.float32)
+    ycb, ycbc, ycbv, ycbt = entry_crash_y(tr_eps), entry_crash_y(ca_eps), entry_crash_y(va_eps), entry_crash_y(te_eps)
+    epos = float(ycb.mean())
+    entry_crash_model, _ = fit(mlp(len(names)), sc(Xb), torch.tensor(ycb), sc(Xbc), torch.tensor(ycbc), nn.BCEWithLogitsLoss(pos_weight=torch.tensor((1 - epos) / max(epos, 1e-6))))
+    def entry_crash_prob(X):
+        with torch.no_grad(): return torch.sigmoid(entry_crash_model(sc(X)).squeeze(-1)).numpy()
+    Xsv2, _, ycsv2 = sell_xy(va_eps); Xst2, _, ycst2 = sell_xy(te_eps)
+    def pc(X):
+        with torch.no_grad(): return torch.sigmoid(crash_model(ss(X)).squeeze(-1)).numpy()
+    crash_quality = {'sell_side': {'base_rate_train': round(cpos, 3), 'auc_val': round(float(roc_auc_score(ycsv2, pc(Xsv2))), 3), 'auc_test': round(float(roc_auc_score(ycst2, pc(Xst2))), 3)},
+                     'buy_side': {'base_rate_train': round(epos, 3), 'auc_val': round(float(roc_auc_score(ycbv, entry_crash_prob(Xbv))), 3),
+                                  'auc_test': round(float(roc_auc_score(ycbt, entry_crash_prob(Xbt))), 3)}}
+    print('CRASH', crash_quality, flush=True)
     cache = {}
     def batch(kind, ep, e):
         """All model outputs for one position at once (states depend only on the launch and the entry second)."""
@@ -187,7 +225,9 @@ def main():
         if key not in cache:
             end = min(E.WINDOW_S, e + E.HOLD_S); X = np.array([sell_state(ep, e, t) for t in range(e + 1, end)])
             with torch.no_grad():
-                cache[key] = torch.sigmoid(stop_model(ss(X)).squeeze(-1)).numpy() if kind == 'stop' else np.stack([q(qs(X)).squeeze(-1).numpy() for q in qnets])
+                if kind == 'stop': cache[key] = torch.sigmoid(stop_model(ss(X)).squeeze(-1)).numpy()
+                elif kind == 'crash': cache[key] = torch.sigmoid(crash_model(ss(X)).squeeze(-1)).numpy()
+                else: cache[key] = np.stack([q(qs(X)).squeeze(-1).numpy() for q in qnets])
         return cache[key]
     def stop_policy(th):
         def pol(ep, e, t, held, trd):
@@ -241,27 +281,52 @@ def main():
     m_all = pick((0.0, 2.0, 5.0, 10.0), lambda m: run(va_eps, allbuy, rl_all(m)))
     sellers = {'rules_v3': rules, 'stop_model': stop_policy(th_stop), 'rl_partial': rl_partial(m_part), 'rl_all': rl_all(m_all)}
     val_sell = {k: round(total(run(va_eps, allbuy, p)) / max(1, len(va_eps)), 2) for k, p in sellers.items()}
-    best_seller = max(val_sell, key=val_sell.get)
-    ths = [round(x, 2) for x in np.arange(0.2, 0.85, 0.05)]; buy_th = {}
-    for k in ('logistic', 'mlp', 'gbt'):
-        pv = prob(k, Xbv); ok = [th for th in ths if (pv >= th).mean() >= MIN_COVERAGE] or [ths[0]]
-        gate_th = lambda th, k=k: (lambda ep, d: prob(k, row(ep, d)[None, :])[0] >= th)
-        buy_th[k] = pick(ok, lambda th: run(va_eps, gate_th(th), sellers[best_seller]))
-    best_buy = max(('all',) + ('logistic', 'mlp', 'gbt'), key=lambda k: total(run(va_eps, allbuy if k == 'all' else (lambda ep, d, k=k: prob(k, row(ep, d)[None, :])[0] >= buy_th[k]), sellers[best_seller])))
+
+    # ---------- GUARDED sellers (loss fix): early exit, crash model, delay-aware stop wrapped around each base seller ----------
+    def guarded(base, early, stop, th_c):
+        def pol(ep, e, t, held, trd):
+            r = ep.price[t] / ep.price[e] - 1
+            if early and t - e <= EARLY_S and r < 0: return held           # below entry in the first 5 s: out
+            if r <= -stop: return held                                     # tight stop: the fill lands ~7-10 pts lower after 2 s
+            if th_c <= 1 and batch('crash', ep, e)[t - e - 1] >= th_c: return held   # crash predicted: out before it
+            return base(ep, e, t, held, trd)
+        return pol
+    def utility(trades):
+        """(meets Tim's loss cap, total net P&L). Candidates that meet the cap always beat those that don't."""
+        big = big_loss_share(trades); return (big <= MAX_BIG_LOSS_SHARE, total(trades) if big <= MAX_BIG_LOSS_SHARE else -big)
+    guard_grid = [(b, early, stop, th_c) for b in sellers for early in (False, True) for stop in (0.05, 0.10, 0.15, 0.25) for th_c in (0.5, 0.6, 0.7, 0.8, 9)]
+    guard_val = {g: utility(run(va_eps, allbuy, guarded(sellers[g[0]], *g[1:]))) for g in guard_grid}
+    best_guard = max(guard_val, key=guard_val.get)
+    sellers['guarded'] = guarded(sellers[best_guard[0]], *best_guard[1:])
+    val_sell['guarded'] = round(total(run(va_eps, allbuy, sellers['guarded'])) / max(1, len(va_eps)), 2)
+    best_seller = max(sellers, key=lambda k: utility(run(va_eps, allbuy, sellers[k])))
+
+    # ---------- BUY: probability threshold + skip launches the entry-crash model flags ----------
+    ths = [round(float(x), 2) for x in np.arange(0.2, 0.85, 0.05)]; crash_ths = (0.5, 0.6, 0.7, 0.8, 9); buy_th = {}
+    make_gate = lambda k, th, cth: (lambda ep, d: (k == 'all' or prob(k, row(ep, d)[None, :])[0] >= th) and (cth > 1 or entry_crash_prob(row(ep, d)[None, :])[0] < cth))
+    for k in ('all', 'logistic', 'mlp', 'gbt'):
+        pv = np.ones(len(Xbv)) if k == 'all' else prob(k, Xbv); cv = entry_crash_prob(Xbv)
+        ok = [(th, cth) for th in (ths if k != 'all' else [0.0]) for cth in crash_ths if ((pv >= th) & ((cv < cth) | (cth > 1))).mean() >= MIN_COVERAGE] or [(ths[0], 9)]
+        buy_th[k] = max(ok, key=lambda c: utility(run(va_eps, make_gate(k, *c), sellers[best_seller])))
+    best_buy = max(buy_th, key=lambda k: utility(run(va_eps, make_gate(k, *buy_th[k]), sellers[best_seller])))
     choices = {'stop_threshold': th_stop, 'rl_partial_margin': m_part, 'rl_all_margin': m_all, 'val_pnl_per_launch_by_seller': val_sell,
-               'best_seller': best_seller, 'buy_thresholds': buy_th, 'best_buy': best_buy}
+               'guard': {'base': best_guard[0], 'early_exit_5s': best_guard[1], 'stop_pct': best_guard[2] * 100, 'crash_threshold': None if best_guard[3] > 1 else best_guard[3],
+                         'meets_loss_cap_on_val': bool(guard_val[best_guard][0])},
+               'best_seller': best_seller, 'buy_thresholds': {k: {'prob': v[0], 'entry_crash': None if v[1] > 1 else v[1]} for k, v in buy_th.items()}, 'best_buy': best_buy,
+               'max_big_loss_share': MAX_BIG_LOSS_SHARE}
     print('validation choices', choices, flush=True)
 
     # ---------- TEST (newest block), scored once ----------
-    gates = {'all': allbuy, **{k: (lambda ep, d, k=k: prob(k, row(ep, d)[None, :])[0] >= buy_th[k]) for k in ('logistic', 'mlp', 'gbt')}}
+    gates = {k: make_gate(k, *buy_th[k]) for k in buy_th}
     res = {f'buy_all + {s}': report(run(te_eps, allbuy, p), len(te_eps)) for s, p in {**sellers, 'hold_10min': E.hold_policy}.items()}
+    res[f'buy_all(crash skip) + {best_seller}'] = report(run(te_eps, gates['all'], sellers[best_seller]), len(te_eps))
     buy_metrics = {}
     for k in ('logistic', 'mlp', 'gbt'):
         res[f'buy_{k} + rules_v3'] = report(run(te_eps, gates[k], rules), len(te_eps))
         res[f'buy_{k} + {best_seller}'] = report(run(te_eps, gates[k], sellers[best_seller]), len(te_eps))
-        buy_metrics[k] = buy_report(prob(k, Xbt) >= buy_th[k], ybt == 1)
-    chosen = f'buy_{best_buy} + {best_seller}'
-    if chosen not in res: res[chosen] = report(run(te_eps, gates[best_buy], sellers[best_seller]), len(te_eps))
+        th, cth = buy_th[k]; buy_metrics[k] = buy_report((prob(k, Xbt) >= th) & ((entry_crash_prob(Xbt) < cth) | (cth > 1)), ybt == 1)
+    chosen = f'CHOSEN buy_{best_buy} (+crash skip if set) + {best_seller}'
+    res[chosen] = report(run(te_eps, gates[best_buy], sellers[best_seller]), len(te_eps))
 
     # ---------- STRESS (Tim: keep 2 s, stress 3-5 s): same trained models, harsher market ----------
     stress = {}
@@ -279,12 +344,13 @@ def main():
         cfg['git_dirty'] = bool(subprocess.check_output(['git', 'status', '--porcelain', '--', 'research'], text=True).strip())
     except Exception: pass
     cfg['config_sha256'] = hashlib.sha256(json.dumps(cfg, sort_keys=True, default=str).encode()).hexdigest()[:16]
-    out = {'config': cfg, 'buy_quality': buy_quality, 'buy_metrics_test': buy_metrics, 'validation_choices': choices, 'chosen_system': chosen,
+    out = {'config': cfg, 'buy_quality': buy_quality, 'crash_quality': crash_quality, 'buy_metrics_test': buy_metrics, 'validation_choices': choices, 'chosen_system': chosen,
            'test': res, 'stress': stress, 'seconds': round(time.time() - t0)}
     json.dump(out, open(os.path.join(a.out, 'results.json'), 'w'), indent=1, default=str)
     torch.save({'buy': {k: m.state_dict() for k, m in buy_models.items()}, 'buy_scaler': sc.state(), 'calibration': cal, 'buy_thresholds': buy_th,
                 'stop': stop_model.state_dict(), 'stop_scaler': ss.state(), 'stop_threshold': th_stop,
                 'q_members': [q.state_dict() for q in qnets], 'q_scaler': qs.state(), 'rl_margins': {'partial': m_part, 'all': m_all},
+                'crash': crash_model.state_dict(), 'entry_crash': entry_crash_model.state_dict(), 'guard': choices['guard'],
                 'features': names, 'config': cfg}, os.path.join(a.out, 'models.pt'))
     import pickle; pickle.dump(gbt, open(os.path.join(a.out, 'buy_gbt.pkl'), 'wb'))
     print(json.dumps({'chosen': chosen, 'chosen_test': res[chosen], 'baseline': res['buy_all + rules_v3']}, indent=1), flush=True)
