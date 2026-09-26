@@ -58,13 +58,42 @@ def label(t, s, end):
     crash = nxt.min() <= p[s] * 0.75 and nxt.max() < p[s] * 1.20
     return int(near_top or crash)
 
+# Target exit v3 (reviewed by Tim 2026-09-26): peak % minus target-exit % must be <= 10 percentage points and the
+# target must be positive. Percentages are vs the entry price; the target is filled LATENCY_S after the decision.
+#  Winner: earliest decision second on the run into the best fill whose fill % >= peak % - 10 (and > 0). If even the best
+#          fill is more than 10 points below the raw peak (a 1-2 s spike already gone by the delayed fill), the target is
+#          the best fill itself: the closest reachable point (flagged as a latency gap).
+#  Loser (best fill never beats costs): no trade; the model is taught to sell at once (minimum loss).
+TARGET_POINTS = 10.0
+def fills_of(t):
+    e = t['entry']; p = t['p']; end = min(720, e + HOLD_S)
+    return {s: p[min(s + LATENCY_S, end)] for s in range(e + 1, end + 1)}, end
+
+def target_exit(t):
+    e = t['entry']; p = t['p']; f, end = fills_of(t)
+    pct = lambda x: (x / p[e] - 1) * 100
+    best = max(f, key=lambda s: (f[s], -s))
+    if net(p[e], f[best]) <= 0: return best, best, 'loser'
+    peak_pct = pct(p[e + 1:end + 1].max())
+    floor = max(peak_pct - TARGET_POINTS, 1e-6)
+    if pct(f[best]) < floor: return best, best, 'winner-latency-gap'
+    tgt = best
+    while tgt - 1 > e and pct(f[tgt - 1]) >= floor: tgt -= 1
+    return tgt, best, 'winner'
+
+def label_v2(t, s, end, tgt=None):
+    # 1 = sell (at or after the target exit, or any time on a loser), 0 = hold
+    tgt = tgt or target_exit(t)
+    return int(tgt[2] == 'loser' or s >= tgt[0])
+
 def dataset(tokens, step):
     X, y = [], []
     for t in tokens:
         e = t.get('entry')
         if e is None: continue
         end = min(720, e + HOLD_S)
-        for s in range(e + 1, end, step): X.append(features(t, e, s)); y.append(label(t, s, end))
+        tgt = target_exit(t)
+        for s in range(e + 1, end, step): X.append(features(t, e, s)); y.append(label_v2(t, s, end, tgt))
     return np.array(X, dtype=np.float32), np.array(y)
 
 net = lambda e, x: ((x * (1 - COST)) / (e * (1 + COST)) - 1) * 100
@@ -135,7 +164,7 @@ def main():
     n = len(tokens); tr, va, te = tokens[:int(n * .7)], tokens[int(n * .7):int(n * .85)], tokens[int(n * .85):]
     Xtr, ytr = dataset(tr, a.step)
     cfg = {'db_tokens': n, 'traded_entries': {k: sum(1 for t in g if t['entry'] is not None) for k, g in (('train', tr), ('val', va), ('test', te))}, 'train_rows': int(len(Xtr)), 'positive_rate': round(float(ytr.mean()), 3),
-           'features': FEATURES, 'label': 'sell-right if rest-of-window max <= +10% from here, or next-60s min <= -25% before +20%', 'cost_per_side': COST, 'first_sight_s': FIRST_SIGHT_S, 'latency_s': a.latency,
+           'features': FEATURES, 'label': 'target exit v3: winner = earliest fill within 10 percentage points of the peak and positive (hold before, sell from it); latency-gap winner = best fill; loser = sell at once', 'cost_per_side': COST, 'first_sight_s': FIRST_SIGHT_S, 'latency_s': a.latency,
            'test_launch_range': [te[0]['created'], te[-1]['created']] if te else None, 'model': 'GradientBoostingClassifier(n_estimators=150,max_depth=3,lr=0.1,subsample=0.8)'}
     try: cfg['git_sha'] = subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip()
     except Exception: pass

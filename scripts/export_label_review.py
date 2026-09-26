@@ -18,6 +18,8 @@ def main():
     from openpyxl.worksheet.datavalidation import DataValidation
     tokens = tp.load(a.db, a.min_traded)
     review, every5 = [], []
+    exact = {}   # exact target fill prices (the sheet rounds percentages)
+    loser_info = {}
     for t in tokens:
         t['entry'] = tp.entry_of(t); e = t['entry']; p = t['p']
         launched = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(t['created'] / 1000))
@@ -25,17 +27,24 @@ def main():
         if e is None:
             review.append([t['name'], t['mint'], launched, tags, 'NO ENTRY', 'no trade within 30 s of first sight, or already +30% (skipped)'] + [None] * 14 + ['', '', '']); continue
         end = min(720, e + tp.HOLD_S)
-        # Realistic best: the decision second whose fill (LATENCY_S later) is highest. On violent tokens the raw top has
-        # already crashed by the time a sale fills, so this can sit a few seconds before the raw peak.
-        fills = np.array([p[min(s_ + tp.LATENCY_S, end)] for s_ in range(e + 1, end + 1)])
-        k = e + 1 + int(np.argmax(fills)); kf = min(k + tp.LATENCY_S, end)
+        zone, k, kind0 = tp.target_exit(t); kf = min(k + tp.LATENCY_S, end); zf = min(zone + tp.LATENCY_S, end)
         raw_peak = e + 1 + int(np.argmax(p[e + 1:end + 1]))
-        labels = [tp.label(t, s, end) for s in range(e + 1, end)]
-        # first second the label says 'sell' at or after the last dip before the peak run: the sell zone that contains the peak
-        zone = next((s for s in range(k, e, -1) if tp.label(t, s, end) == 0), e) + 1
-        zf = min(zone + tp.LATENCY_S, end)
+        tgt = (zone, k, kind0); labels = [tp.label_v2(t, s_, end, tgt) for s_ in range(e + 1, end)]
         peak_pct = (p[raw_peak] / p[e] - 1) * 100; best = tp.net(p[e], p[kf]); zone_pnl = tp.net(p[e], p[zf])
-        kind = 'WINNER (peak beats costs)' if best > 0 else 'LOSER (never beats costs: best = minimum loss)'
+        early_drop = bool((p[e + 1:min(e + 6, end) + 1] < p[e]).any())
+        exact[t['mint']] = float(p[zf])
+        # Why a loser never offered a positive exit: compare the buy decision, the delayed fill and what came next.
+        d = e - tp.LATENCY_S; slip = (p[e] / p[d] - 1) * 100; after = p[e + 1:end + 1]
+        max_gain = (after.max() / p[e] - 1) * 100; below = np.nonzero(after < p[e])[0]; secs_below = int(below[0]) + 1 if len(below) else None
+        if kind0 != 'loser': why = ''
+        elif (after == p[e]).all(): why = 'dead after entry: no trades once we were in'
+        elif slip >= 10 and max_gain <= 0: why = f'bought the spike: the 2 s buy delay filled {slip:.0f}% above the decision price, then it only fell'
+        elif secs_below is not None and secs_below <= tp.LATENCY_S and max_gain <= 0: why = 'dropped immediately: below entry before any sale could fill'
+        elif max_gain <= 0: why = 'never traded above entry after we were in'
+        elif max_gain >= 6.7: why = f'spike shorter than the 2 s sell delay: touched +{max_gain:.1f}% but was gone before any sale could fill'
+        else: why = f'rose too little: best +{max_gain:.1f}%, under the ~6.7% round-trip costs'
+        loser_info[t['mint']] = (round(p[d], 12), round(slip, 1), round(max_gain, 1), secs_below, why)
+        kind = {'winner':'WINNER','winner-latency-gap':'WINNER (latency gap: raw top gone before a 2 s fill)'}.get(kind0) or ('LOSER: do not enter / exit at once' + (' (dropped below entry within 5 s)' if early_drop else ''))
         review.append([t['name'], t['mint'], launched, tags, kind, '',
                        e, p[e], raw_peak, p[raw_peak], round(peak_pct, 1), kf, p[kf], round(best, 1), round(0.02 * best, 2),
                        zone, zf, round((p[zf] / p[kf] - 1) * 100, 1), round(zone_pnl, 1), round(0.02 * zone_pnl, 2), '', '', ''])
@@ -81,13 +90,13 @@ def main():
     db.execute('DROP TABLE IF EXISTS exit_labels')
     db.execute('''CREATE TABLE exit_labels(token TEXT, mint TEXT PRIMARY KEY, launched TEXT, launch_type TEXT, result TEXT, entry_sec INTEGER, entry_price REAL,
       peak_sec INTEGER, peak_price REAL, peak_pct REAL, best_fill_sec INTEGER, best_fill_price REAL, best_pnl_pct REAL,
-      target_exit_sec INTEGER, target_exit_fill_sec INTEGER, target_exit_fill_price REAL, target_exit_pct REAL, peak_minus_target_pct REAL, seconds_before_peak INTEGER, target_exit_pnl_pct REAL, latency_s INTEGER)''')
+      target_exit_sec INTEGER, target_exit_fill_sec INTEGER, target_exit_fill_price REAL, target_exit_pct REAL, peak_minus_target_pct REAL, seconds_before_peak INTEGER, target_exit_pnl_pct REAL, latency_s INTEGER, decision_price REAL, entry_slippage_pct REAL, max_gain_after_entry_pct REAL, secs_to_below_entry INTEGER, loser_reason TEXT)''')
     for r in review:
         if r[4] == 'NO ENTRY': continue
         name, mint, launched, tags, kind, _, e, ep, k, kp, kpct, kf, kfp, best, _, zone, zf, gap, zpnl, _ = r[:20]
-        zfp = kfp * (1 + gap / 100)
-        db.execute('INSERT OR REPLACE INTO exit_labels VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', (name, mint, launched, tags, 'winner' if kind.startswith('WINNER') else 'loser', e, ep, k, kp, kpct, kf, kfp, best,
-                   zone, zf, zfp, round((zfp / ep - 1) * 100, 1), round(-gap, 1), (kf - tp.LATENCY_S) - zone, zpnl, a.latency))
+        zfp = exact[mint]
+        db.execute('INSERT OR REPLACE INTO exit_labels VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)', (name, mint, launched, tags, ('winner-latency-gap' if 'latency gap' in kind else 'winner') if kind.startswith('WINNER') else 'loser', e, ep, k, kp, kpct, kf, kfp, best,
+                   zone, zf, zfp, round((zfp / ep - 1) * 100, 1), round(-gap, 1), (kf - tp.LATENCY_S) - zone, zpnl, a.latency, *loser_info[mint]))
     db.commit(); print('wrote table exit_labels in', a.db)
     zone_gap = [r[17] for r in winners if isinstance(r[17], (int, float))]
     print(f'wrote {a.out}: {len(review)} launches, {len(traded)} traded, {len(winners)} winners; label fill vs peak median {np.median(zone_gap):.1f}% (winners)' if zone_gap else f'wrote {a.out}')
