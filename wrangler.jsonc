@@ -28,7 +28,7 @@
     }
   ],
   "vars": {
-    "AI_SEARCH_INSTANCE": ""
+    "AI_SEARCH_INSTANCE": "crypto-study-media"
   },
   "durable_objects": {
     "bindings": [
