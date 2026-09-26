@@ -73,3 +73,9 @@ Set the production password using protected stdin or the Wrangler prompt. Never 
 Run `npm run credentials` and open http://127.0.0.1:8878. Select OAuth client credentials or a Coinbase API key, fill both fields, and save. The local-only server writes `.secrets/coinbase.json` as plaintext with owner-only permissions (directory 0700, file 0600). This directory is ignored by Git and is not part of the published assets. Saving replaces the existing Coinbase credential file; credentials are never returned to the browser or printed in logs.
 
 Run `npm run credentials:upload` when ready to upload the saved values to the Worker configured in `wrangler.jsonc`. The uploader sends the JSON through Wrangler's standard input, not command arguments. This updates Worker secrets; it does not implement Coinbase OAuth authorization or enable live trading. OAuth credentials identify an application and still require account authorization. Close the local setup server with Ctrl+C when finished.
+
+### CDP Solana wallet route
+
+The selected approach is a separate CDP API-key-controlled Solana wallet, funded manually by the owner, rather than linking the consumer Coinbase balance. The existing Ed25519 developer API key is suitable for CDP API authentication. A separate Wallet Secret is required for wallet operations. The local credential form has a dedicated Wallet Secret section, which writes `.secrets/coinbase-wallet.json` with owner-only permissions without changing the API key pair. `npm run credentials:upload` includes `CDP_WALLET_SECRET` if that file exists. No wallet creation, funding, signing, or live execution is enabled just by saving/uploading these values. Create and verify the Solana wallet and test its signing flow before presenting an address for funding. The user's stated future live trial budget is $11 total, after testing.
+
+Reference: https://docs.cdp.coinbase.com/wallets/quickstart/api-key-auth
