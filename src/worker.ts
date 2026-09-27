@@ -2,7 +2,7 @@ export { StudyCoordinator, StudyRecorder } from './study-collector';
 import { observe, scanExplore, type Frame } from './observer';
 import { timingSafeEqual } from 'node:crypto';
 import { costs } from './research-model';
-import { askAstra, type ChatEnv, type ChatTurn } from './astra-chat';
+import { askAstra, logChat, type ChatEnv, type ChatTurn } from './astra-chat';
 import { exportStudy } from './rag-export';
 import { DurableObject } from 'cloudflare:workers';
 import { buy, close, equity, event, initialState, processTick, rejectionReasons, validateRules, type DeskState } from './engine';
@@ -249,7 +249,9 @@ async function route(request: Request, env: Env): Promise<Response> {
       const input = await body(request);
       if (typeof input.question !== 'string' || !input.question.trim() || input.question.length > 4000) return json({ error: 'Ask a question (up to 4,000 characters).' }, 400);
       const history = (Array.isArray(input.history) ? input.history : []).filter((t): t is ChatTurn => !!t && (t.role === 'user' || t.role === 'assistant') && typeof t.content === 'string');
-      return json(await askAstra(env as unknown as ChatEnv, input.question.trim(), history));
+      const result = await askAstra(env as unknown as ChatEnv, input.question.trim(), history);
+      await logChat(env.CRYPTO_STUDY, input.question.trim(), result).catch(() => {});   // Astra history (astra_log)
+      return json(result);
     }
     if (path === '/api/rag/studies' && request.method === 'GET') {
       const rows = (await env.CRYPTO_STUDY.prepare('SELECT id, started_at FROM study_campaigns ORDER BY started_at DESC').all<{ id: string; started_at: number }>()).results;

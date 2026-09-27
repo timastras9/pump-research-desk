@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { outcome, studyFiles, mergeIndex, tokenKey, tokenDoc, recordingDoc } from '../src/rag-export';
-import { buildChat, askAstra, CHAT_CAP_USD } from '../src/astra-chat';
+import { buildChat, askAstra, logChat, CHAT_CAP_USD } from '../src/astra-chat';
 // @ts-ignore browser module without types
 import { turnHtml, ragStatusText } from '../public/chat.js';
 
@@ -65,6 +65,14 @@ test('chat: works without AI Search (index only) and reports cost', async () => 
   const r = await askAstra(env, 'Which study lost most?');
   assert.equal(r.answer, 'Study c1 lost $9.98.'); assert.equal(r.ragConnected, false); assert.equal(r.indexLoaded, true); assert.equal(r.actualUsd, 0.017);
   assert.match(JSON.stringify(sent.messages), /LIVE STUDY INDEX/);
+});
+
+test('astra log: every question and answer is saved with sources and cost', async () => {
+  const sql: { q: string; args: unknown[] }[] = [];
+  const db = { prepare: (q: string) => { const row = { q, args: [] as unknown[] }; sql.push(row); return { bind: (...a: unknown[]) => { row.args = a; return { run: async () => ({}) }; }, run: async () => ({}) }; } } as any;
+  await logChat(db, 'Which study lost most?', { answer: 'c1', error: null, sources: ['rag/index.json'], actualUsd: 0.02, estimatedUsd: 0.05, model: 'openai/gpt-6-astra' }, 123);
+  assert.match(sql[0].q, /CREATE TABLE IF NOT EXISTS astra_log/);
+  assert.deepEqual(sql[1].args, [123, 'Which study lost most?', 'c1', null, '["rag/index.json"]', 0.02, 'openai/gpt-6-astra']);
 });
 
 test('chat page: answers and questions are escaped; status explains a missing search instance', () => {
