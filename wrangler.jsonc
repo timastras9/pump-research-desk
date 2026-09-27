@@ -43,6 +43,10 @@
       {
         "name": "RECORDERS",
         "class_name": "StudyRecorder"
+      },
+      {
+        "name": "ASTRAS",
+        "class_name": "AstrasAgent"
       }
     ]
   },
@@ -58,6 +62,12 @@
       "new_sqlite_classes": [
         "StudyCoordinator",
         "StudyRecorder"
+      ]
+    },
+    {
+      "tag": "v3",
+      "new_sqlite_classes": [
+        "AstrasAgent"
       ]
     }
   ],

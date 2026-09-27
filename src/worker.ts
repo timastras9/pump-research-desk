@@ -1,4 +1,5 @@
 export { StudyCoordinator, StudyRecorder } from './study-collector';
+export { AstrasAgent } from './astras-do';
 import { observe, scanExplore, type Frame } from './observer';
 import { timingSafeEqual } from 'node:crypto';
 import { costs } from './research-model';
@@ -248,8 +249,10 @@ async function route(request: Request, env: Env): Promise<Response> {
     if (path === '/api/chat' && request.method === 'POST') {
       const input = await body(request);
       if (typeof input.question !== 'string' || !input.question.trim() || input.question.length > 4000) return json({ error: 'Ask a question (up to 4,000 characters).' }, 400);
+      // With a session id the Astras agent (Durable Object, tools, memory) answers; without one, the plain RAG answer.
+      const session = typeof input.session === 'string' && /^[a-z0-9-]{8,64}$/.test(input.session) ? input.session : null;
       const history = (Array.isArray(input.history) ? input.history : []).filter((t): t is ChatTurn => !!t && (t.role === 'user' || t.role === 'assistant') && typeof t.content === 'string');
-      const result = await askAstra(env as unknown as ChatEnv, input.question.trim(), history);
+      const result = session ? await env.ASTRAS.getByName(session).chat(input.question.trim()) : await askAstra(env as unknown as ChatEnv, input.question.trim(), history);
       await logChat(env.CRYPTO_STUDY, input.question.trim(), result).catch(() => {});   // Astra history (astra_log)
       return json(result);
     }
