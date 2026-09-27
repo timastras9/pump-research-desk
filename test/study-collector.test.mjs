@@ -1,0 +1,55 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import ts from 'typescript';
+
+// Execute the production coordinator with deterministic storage/browser adapters.
+// This tests alarm state transitions without billable browser or AI requests.
+function harness(options={}){
+  let now=1_800_000_000_000,scans=0,captures=0;const alarms=new Map(),recorders=new Map();
+  const state=new Map(),tables={study_campaigns:new Map(),study_tokens:new Map(),study_chunks:new Map()};
+  function makeStorage(key){let state=new Map();return {sql:{exec(query,...args){
+    if(query.startsWith('CREATE'))return {toArray:()=>[]};
+    if(query.startsWith('INSERT')){state.set(args[0],args[1]);return {toArray:()=>[]};}
+    const rows=query.includes('LIKE')?[...state].filter(([k])=>k.startsWith(args[0].replace('%',''))).map(([,data])=>({data})):(state.has(args[0])?[{data:state.get(args[0])}]:[]);
+    return {toArray:()=>rows};
+  }},setAlarm:async value=>{alarms.set(key,value);},getAlarm:async()=>alarms.get(key)??null,deleteAlarm:async()=>{alarms.delete(key);}};}
+  const storage=makeStorage('parent');
+  const db={prepare(query){let args=[];const table=Object.keys(tables).find(t=>query.includes(t));return {bind(...values){args=values;return this;},async run(){tables[table].set(args[0],{data:args.at(-1),args});if(options.dbHook)await options.dbHook(query,args);},async first(){return tables[table].get(args[0])??null;},async all(){let rows=[...tables[table].values()];if(query.includes('campaign_id')||query.includes('token_id'))rows=rows.filter(r=>r.args[1]===args[0]);return {results:rows};}};}};
+  const env={CRYPTO_STUDY:db,CRYPTO_MEDIA:{put:async()=>{}},AI:{run:async()=>({})}};
+  class Clock extends Date{static now(){return now;}}
+  const candidate={mint:'123456789ABCDEFGHJKLMNPQRSTUVWXYZabcd',name:'test',group:'new',createdAt:now,detectedAt:now,firstSeenAt:now,raw:{},marketCapUsd:null,athUsd:null,volume24hUsd:null,traders:null,transactions:null};
+  const mocks={
+    'cloudflare:workers':{DurableObject:class {constructor(ctx,env){this.ctx=ctx;this.env=env;}}},
+    './observer':{browserCapacity:async()=>({maxConcurrentSessions:options.capacity??21,activeSessions:[],allowedBrowserAcquisitions:20,timeUntilNextAllowedBrowserAcquisition:0}),scanExplore:async()=>{scans++;return {candidates:options.candidates??[candidate],errors:[],browserDurationMs:10};},observe:async(_env,_mint,id,_seconds,_assumptions,save)=>{captures++;if(options.observeHook)await options.observeHook(_mint);const frame={index:0,captureStartedAt:now,capturedAt:now,screenshotMs:0,image:'YQ==',text:'',priceUsd:1,priceRaw:'$1',priceMode:'Price',priceReadAt:now};await save(frame);return {id,startedAt:now,samples:[frame],reviews:[],measurements:{durationMs:1000},browserDurationMs:1100,usage:[],failure:null};}},
+    './study-features':{compareEarlyWithLater:()=>({early:[],laterOutcomes:[]})},
+    './research-model':{freshLaunch:c=>now-c.createdAt<=60000},
+    './study-analysis':{compactStudyInput:x=>x,compactAggregateInput:x=>x,summarizeSamples:()=>({classification:'flat'}),analyzeStudy:async()=>({analysis:{},usage:{estimatedUsd:0},error:null}),aggregateStudies:rows=>({all:{count:rows.length}}),usageFromResponse:()=>({estimatedUsd:0})},
+  };
+  const source=ts.transpileModule(readFileSync(new URL('../src/study-collector.ts',import.meta.url),'utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText;
+  const exports={};new Function('require','exports','Date',source)(name=>{if(!mocks[name])throw Error(`Unexpected dependency ${name}`);return mocks[name];},exports,Clock);
+  env.RECORDERS={getByName(id){if(!recorders.has(id))recorders.set(id,new exports.StudyRecorder({storage:makeStorage(id)},env));return recorders.get(id);}};
+  const coordinator=new exports.StudyCoordinator({storage},env);
+  return {coordinator,state,tables,advance:ms=>{now+=ms;},recorders,alarm:()=>alarms.get('parent'),runChildren:()=>Promise.all([...recorders.values()].map(r=>r.alarm())),scans:()=>scans,captures:()=>captures};
+}
+
+test('capacity checked and default campaign can admit 100 with twenty isolated recorders',async()=>{
+ const h=harness();const c=await h.coordinator.start();assert.equal(c.maxTokens,100);assert.equal(c.concurrency,20);await assert.rejects(h.coordinator.start());await h.coordinator.stop();const limited=harness({capacity:4});assert.equal((await limited.coordinator.start()).concurrency,3);await assert.rejects(harness({capacity:1}).coordinator.start());
+});
+test('discovery only admits; child alarms persist evidence and finish independently',async()=>{
+ const h=harness();const c=await h.coordinator.start({maxTokens:1});await h.coordinator.alarm();assert.equal(h.captures(),0);assert.equal(h.recorders.size,1);await h.runChildren();assert.equal(h.captures(),1);assert.equal(h.tables.study_chunks.size,1);h.advance(600001);await h.runChildren();await h.coordinator.alarm();const d=await h.coordinator.detail(c.id);assert.equal(d.tokens[0].status,'finished');assert.equal(d.campaign.status,'finished');
+});
+test('a stalled token does not block discovery or another token recorder',async()=>{
+ let release,entered;const gate=new Promise(r=>release=r),reached=new Promise(r=>entered=r);
+ const candidates=[0,1].map(i=>({mint:`mint${i}`,name:`token${i}`,group:'new',createdAt:1_800_000_000_000,raw:{}}));
+ const h=harness({candidates,observeHook:async mint=>{if(mint==='mint0'){entered();await gate;}}});const c=await h.coordinator.start({maxTokens:5});await h.coordinator.alarm();const children=[...h.recorders.values()];const stalled=children[0].alarm();await reached;await children[1].alarm();h.advance(30000);await h.coordinator.alarm();assert.equal(h.scans(),2);const d=await h.coordinator.detail(c.id);assert.equal(d.tokens.find(t=>t.mint==='mint1').frameCount,1);release();await stalled;
+});
+test('stop preserves stopped status after an in-flight child completes',async()=>{
+ let release,entered;const gate=new Promise(r=>release=r),reached=new Promise(r=>entered=r);const h=harness({observeHook:async()=>{entered();await gate;}});const c=await h.coordinator.start({maxTokens:1});await h.coordinator.alarm();const work=h.runChildren();await reached;await h.coordinator.stop(c.id);release();await work;assert.equal((await h.coordinator.detail(c.id)).tokens[0].status,'stopped');
+});
+test('each failed token has bounded attempts and exclusions retain evidence',async()=>{
+ const h=harness({observeHook:async()=>{throw Error('Browser failed');}});const c=await h.coordinator.start({maxTokens:1});await h.coordinator.alarm();for(let i=0;i<4;i++)await h.runChildren();const d=await h.coordinator.detail(c.id);assert.equal(h.captures(),3);assert.equal(d.tokens[0].status,'failed');const id=d.tokens[0].id;await assert.rejects(h.coordinator.flag(id,true,''));await h.coordinator.flag(id,true,'Incomplete');await h.coordinator.flag(id,false,'');assert.equal((await h.coordinator.token(id)).token.excluded,false);
+});
+test('capacity skips explicitly count tokens the study could not admit',async()=>{
+ const candidates=Array.from({length:5},(_,i)=>({mint:`mint${i}`,name:`token${i}`,group:'new',createdAt:1_800_000_000_000,raw:{}}));const h=harness({candidates});const c=await h.coordinator.start({maxTokens:5,concurrency:2});await h.coordinator.alarm();const d=await h.coordinator.detail(c.id);assert.equal(d.tokens.length,2);assert.equal(d.campaign.skippedCapacity,3);assert.equal(d.campaign.seenCount,5);
+});
