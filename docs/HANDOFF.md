@@ -7,7 +7,7 @@ Read this first in a new session. Then check `~/.claude/projects/-Users-tim-Docu
 | What | Where |
 |---|---|
 | Code | worktree `/Users/tim/Documents/ChatGPT/pump.fun/.claude/worktrees/deploy-10min-studies`, branch `worktree-deploy-10min-studies` |
-| GitHub | `timastras9/pump-research-desk`, draft PR #1 (push with `gh auth switch --user timastras9`, then switch back to `National-Security-Intelligence`) |
+| GitHub | `timastras9/pump-research-desk`, draft PR #1 (repo is pinned to timastras9: author timastras9@gmail.com, pushes use `gh auth token --user timastras9` via a repo-local credential helper; plain `git push` works, no account switching) |
 | Live site | https://pump-research-desk.timastras9.workers.dev (Studies, Paper trading, Model tabs) |
 | Live version | **c400d2a1** (deployed 17:01 local, commit c83f4db) |
 | Corpus (SQLite) | `/Users/tim/Documents/ChatGPT/pump.fun/artifacts/corpus/launches.db` (git-ignored) |
