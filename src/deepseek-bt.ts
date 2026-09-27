@@ -66,12 +66,25 @@ export function lookupText(doc: any): string {
 export const planSystem = (table: string) => `${DS_SYSTEM.replace('Answer with exactly one word: BUY or SKIP.', '')}
 EXIT LOOKUP (5,700+ past launches; situation = price change over the last 30 s | seconds with a price change in that window):
 ${table}
-Match the token to its row, then decide. Reply with ONLY JSON: {"decision":"BUY" or "SKIP","take_profit":<pct>,"stop":<negative pct>,"time_limit_s":<seconds>}`;
+Match the token to its row, then decide. Reply with ONLY one character: 1 = buy, 0 = skip.`;
 export function parsePlan(text: string): Plan {
   const m = String(text).match(/\{[\s\S]*\}/); let j: any = {};
   try { j = m ? JSON.parse(m[0]) : {}; } catch { /* not JSON */ }
   const num = (x: any, d: number, lo: number, hi: number) => { const n = Number(x); return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : d; };
   return { buy: String(j.decision ?? text).toUpperCase().includes('BUY'), tp: num(j.take_profit, 20, 1, 1000), sl: -Math.abs(num(j.stop, -10, -90, -1)), tmax: num(j.time_limit_s, 60, 5, 600) };
+}
+// Same bucket edges as research/exit_lookup_table.py, so the exit plan is the matching row's best plan (no model tokens).
+const CHG_EDGES: [number, number, string][] = [[-1e9, -20, 'down >20%'], [-20, -5, 'down 5-20%'], [-5, 5, 'flat ±5%'], [5, 20, 'up 5-20%'], [20, 50, 'up 20-50%'], [50, 1e9, 'up >50%']];
+const ACT_EDGES: [number, number, string][] = [[0, 5, 'quiet (0-5 s active)'], [6, 15, 'active (6-15 s)'], [16, 1e9, 'busy (16+ s)']];
+export function situation(v: Px[], startAt: number) {
+  const until = startAt + DECIDE_MS, seen = v.filter(s => s.time <= until); if (seen.length < 2) return null;
+  const chg = (seen.at(-1)!.priceUsd / seen[0].priceUsd - 1) * 100, act = new Set(seen.filter((s, i) => i && s.priceUsd !== seen[i - 1].priceUsd).map(s => Math.floor(s.time / 1000))).size;
+  return { chg, act, chgLabel: CHG_EDGES.find(([lo, hi]) => chg >= lo && chg < hi)![2], actLabel: ACT_EDGES.find(([lo, hi]) => act >= lo && act <= hi)![2] };
+}
+export function lookupPlan(doc: any, sit: { chgLabel: string; actLabel: string }): Omit<Plan, 'buy'> {
+  const rows = doc?.rows ?? [];
+  const r = rows.find((x: any) => x.level === 'change+activity' && x.change_30s === sit.chgLabel && x.activity_30s === sit.actLabel) ?? rows.find((x: any) => x.level === 'change' && x.change_30s === sit.chgLabel);
+  return r ? { tp: r.best_plan.take_profit_pct, sl: r.best_plan.stop_pct, tmax: r.best_plan.time_limit_s } : { tp: 20, sl: -10, tmax: 60 };
 }
 export function situationText(v: Px[], startAt: number) {
   const until = startAt + DECIDE_MS, seen = v.filter(s => s.time <= until); if (seen.length < 2) return null;
@@ -90,11 +103,11 @@ export async function askDeepSeekPlan(key: string, system: string, prompt: strin
   const t0 = Date.now();
   const r = await doFetch('https://api.fireworks.ai/inference/v1/chat/completions', { method: 'POST',
     headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', Accept: 'application/json' },
-    body: JSON.stringify({ model, messages: [{ role: 'system', content: system }, { role: 'user', content: prompt }], max_tokens: 80, temperature: 0, reasoning_effort: 'none', service_tier: 'priority' }) });
+    body: JSON.stringify({ model, messages: [{ role: 'system', content: system }, { role: 'user', content: prompt }], max_tokens: 1, temperature: 0, reasoning_effort: 'none', service_tier: 'priority' }) });   // Tim: boolean answer for speed
   const j = await r.json() as any, latencyMs = Date.now() - t0;
   if (!r.ok) throw Error(`Fireworks ${r.status}: ${j?.error?.message ?? j?.message ?? 'request failed'}`);
   const text = String(j?.choices?.[0]?.message?.content ?? '');
-  return { ...parsePlan(text), answer: text.slice(0, 120), latencyMs };
+  return { buy: text.trim().startsWith('1'), answer: text.slice(0, 20), latencyMs };
 }
 
 export type BtRow = { tokenId: string; name: string; campaignId: string; buy: boolean; answer: string; latencyMs: number; netAll: number | null; netDs: number | null; finalPct: number | null };
