@@ -33,11 +33,24 @@ export function netFrom(v: Px[], at: number): number | null {
   return tradeFrom(v, i, PAPER_RULES).pnlPct ?? null;
 }
 
-export async function askDeepSeek(key: string, prompt: string, doFetch: typeof fetch = fetch) {
+/** The DeepSeek model this Fireworks account can actually call (fixed ids 404 when not deployed for the account).
+ *  Asks Fireworks' model list and prefers V4 Pro > V4 Flash > V3.2 > V3.1 > any DeepSeek. */
+export const DS_PREFERENCE = ['deepseek-v4-pro', 'deepseek-v4-flash', 'deepseek-v3p2', 'deepseek-v3p1'];
+export async function resolveDeepSeekModel(key: string, doFetch: typeof fetch = fetch): Promise<string> {
+  const r = await doFetch('https://api.fireworks.ai/inference/v1/models', { headers: { Authorization: `Bearer ${key}`, Accept: 'application/json' } });
+  const j = await r.json() as any;
+  if (!r.ok) throw Error(`Fireworks model list ${r.status}: ${j?.error?.message ?? j?.message ?? 'request failed'}`);
+  const ids: string[] = (j?.data ?? []).map((m: any) => String(m.id ?? '')).filter((id: string) => /deepseek/i.test(id));
+  for (const pref of DS_PREFERENCE) { const hit = ids.find(id => id.endsWith('/' + pref)) ?? ids.find(id => id.includes(pref)); if (hit) return hit; }
+  if (ids.length) return ids[0];
+  throw Error('no DeepSeek model available to this Fireworks account');
+}
+
+export async function askDeepSeek(key: string, prompt: string, doFetch: typeof fetch = fetch, model = DS_MODEL) {
   const t0 = Date.now();
   const r = await doFetch('https://api.fireworks.ai/inference/v1/chat/completions', { method: 'POST',
     headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', Accept: 'application/json' },
-    body: JSON.stringify({ model: DS_MODEL, messages: [{ role: 'system', content: DS_SYSTEM }, { role: 'user', content: prompt }], max_tokens: 5, temperature: 0, reasoning_effort: 'none' }) });
+    body: JSON.stringify({ model, messages: [{ role: 'system', content: DS_SYSTEM }, { role: 'user', content: prompt }], max_tokens: 5, temperature: 0, reasoning_effort: 'none' }) });
   const j = await r.json() as any, latencyMs = Date.now() - t0;
   if (!r.ok) throw Error(`Fireworks ${r.status}: ${j?.error?.message ?? j?.message ?? 'request failed'}`);
   const text = String(j?.choices?.[0]?.message?.content ?? '').trim().toUpperCase();

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { dsPrompt, netFrom, scoreToken, btSummary, askDeepSeek, validPrices, DECIDE_MS } from '../src/deepseek-bt';
+import { dsPrompt, netFrom, scoreToken, btSummary, askDeepSeek, resolveDeepSeekModel, validPrices, DECIDE_MS } from '../src/deepseek-bt';
 import { paperTrade } from '../src/paper-trader';
 // @ts-ignore browser module without types
 import { dsHtml } from '../public/chat.js';
@@ -40,6 +40,14 @@ test('summary + panel: latency, three strategies side by side, escaped errors', 
   const html = dsHtml({ status: 'finished', done: 2, total: 2, errors: ['<b>x</b>'], summary: s });
   assert.match(html, /DeepSeek BUY picks/); assert.match(html, /&lt;b&gt;x/); assert.match(html, /median 0\.40 s/);
   assert.equal(DECIDE_MS, 30000);
+});
+
+test('model resolution: picks the DeepSeek id this account can call (V4 Pro > V4 Flash > V3.2 > V3.1), clear error otherwise', async () => {
+  const list = (ids: string[], ok = true) => (async () => ({ ok, status: ok ? 200 : 401, json: async () => (ok ? { data: ids.map(id => ({ id })) } : { error: { message: 'bad key' } }) })) as any;
+  assert.equal(await resolveDeepSeekModel('k', list(['accounts/fireworks/models/llama-4', 'accounts/fireworks/models/deepseek-v3p1', 'accounts/fireworks/models/deepseek-v4-flash'])), 'accounts/fireworks/models/deepseek-v4-flash');
+  assert.equal(await resolveDeepSeekModel('k', list(['accounts/fireworks/models/deepseek-v4-pro-0813', 'accounts/fireworks/models/deepseek-v3p1'])), 'accounts/fireworks/models/deepseek-v4-pro-0813');
+  await assert.rejects(resolveDeepSeekModel('k', list(['accounts/fireworks/models/llama-4'])), /no DeepSeek model/);
+  await assert.rejects(resolveDeepSeekModel('k', list([], false)), /model list 401: bad key/);
 });
 
 test('deepseek call: thinking off, 5-token answer, key only in the header', async () => {

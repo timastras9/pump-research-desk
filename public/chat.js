@@ -18,7 +18,7 @@ export function dsHtml(s){
  if(!s||s.status==='not started')return '<p class="muted">Not run yet.</p>';
  const pct=v=>v==null?'—':(v>0?'+':'')+v+'%',row=(name,x)=>`<tr><td>${esc(name)}</td><td>${esc(x?.n??0)}</td><td>${pct(x?.avgPct)}${x?.ci95!=null?` ±${esc(x.ci95)}`:''}</td><td>${x?.winPct==null?'—':esc(x.winPct)+'%'}</td><td>${x?.usd==null?'—':(x.usd>=0?'+$':'-$')+Math.abs(x.usd).toFixed(2)}</td></tr>`;
  const sm=s.summary||{},lat=sm.latencyMs;
- return `<p>${esc(s.status)} · ${esc(s.done)}/${esc(s.total)} tokens · DeepSeek said BUY on ${esc(sm.buys??0)}${lat?` · answer time median ${(lat.median/1000).toFixed(2)} s, p90 ${(lat.p90/1000).toFixed(2)} s`:''}</p>
+ return `<p>${esc(s.status)} · ${esc(s.done)}/${esc(s.total)} tokens${s.model?` · model ${esc(s.model)}`:''} · DeepSeek said BUY on ${esc(sm.buys??0)}${lat?` · answer time median ${(lat.median/1000).toFixed(2)} s, p90 ${(lat.p90/1000).toFixed(2)} s`:''}</p>
 <div class="table-scroll"><table><thead><tr><th>Strategy (same tokens)</th><th>Trades</th><th>Avg per trade (95% CI)</th><th>Won</th><th>Total ($2)</th></tr></thead><tbody>${row('Buy everything at 30 s',sm.buyEverything)}${row('DeepSeek BUY picks (after its answer time)',sm.deepseekBuys)}${row('Tokens DeepSeek skipped',sm.deepseekSkips)}</tbody></table></div>
 ${(s.errors||[]).length?`<p class="error small">${s.errors.map(esc).join('<br>')}</p>`:''}`;
 }
@@ -48,6 +48,6 @@ if(typeof document!=='undefined'){
  status().catch(e=>{$('rag-status').textContent=e.message;});
  let dsTimer=null;
  async function dsStatus(){const s=await api('/api/deepseek/status');$('ds-status').innerHTML=dsHtml(s);clearTimeout(dsTimer);if(s.status==='running')dsTimer=setTimeout(()=>dsStatus().catch(()=>{}),4000);}
- $('ds-run').onclick=async()=>{$('ds-run').disabled=true;try{await api('/api/deepseek/run',{});await dsStatus();}catch(e){$('ds-status').textContent=e.message;}finally{$('ds-run').disabled=false;}};
+ $('ds-run').onclick=async()=>{$('ds-run').disabled=true;try{const r=await api('/api/deepseek/run',{});if(r.error){$('ds-status').innerHTML=`<p class="error">${esc(r.error)}</p>`;return;}await dsStatus();}catch(e){$('ds-status').textContent=e.message;}finally{$('ds-run').disabled=false;}};
  dsStatus().catch(e=>{$('ds-status').textContent=e.message;});
 }
