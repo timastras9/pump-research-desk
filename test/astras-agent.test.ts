@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { safeSelect, safeDocKey, safeCodeRef, runTool, agentTurn, groqModel, TOOLS, AGENT_CAP_USD } from '../src/astras-agent';
+import { safeSelect, safeDocKey, safeCodeRef, runTool, agentTurn, groqModel, workersAiModel, withFallback, TOOLS, AGENT_CAP_USD } from '../src/astras-agent';
 
 test('query_db guard: one read-only SELECT over the 5 study tables, row cap added', () => {
   assert.equal(safeSelect("SELECT json_extract(data,'$.name') FROM study_tokens WHERE campaign_id='x';"), "SELECT * FROM (SELECT json_extract(data,'$.name') FROM study_tokens WHERE campaign_id='x') LIMIT 200");
@@ -79,14 +79,14 @@ test('tools: DB runs only the guarded SQL; blocked SQL never reaches D1; docs li
 test('agent loop: calls a tool, feeds the result back, answers; lists tools and sources', async () => {
   const seen: any[] = [];
   const replies = [
-    { choices: [{ message: { content: '{"tool":"read_doc","args":{"key":"rag/index.json"}}' } }], usage: { prompt_tokens: 1000, completion_tokens: 50 } },
+    { choices: [{ message: { content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'read_doc', arguments: '{"key":"rag/index.json"}' } }] } }], usage: { prompt_tokens: 1000, completion_tokens: 50 } },
     { choices: [{ message: { content: 'No studies yet.' } }], usage: { prompt_tokens: 1200, completion_tokens: 20 } },
   ];
   const e = env({ AI: { run: async (_m: string, i: any) => { seen.push(JSON.parse(JSON.stringify(i.messages))); return replies.shift(); } } });
   const r = await agentTurn(e as any, [{ role: 'user', content: 'hi' }, { role: 'assistant', content: 'hello' }], 'How many studies?');
   assert.equal(r.answer, 'No studies yet.'); assert.deepEqual(r.tools, [{ name: 'read_doc', ok: true, detail: 'rag/index.json' }]); assert.deepEqual(r.sources, ['rag/index.json']);
   assert.equal(seen[0][1].content, 'hi', 'session memory sent'); assert.match(seen[0][0].content, /Astras agent/);
-  assert.equal(seen[1].at(-1).role, 'user'); assert.equal(seen[1].at(-1).content, 'TOOL RESULT (read_doc, ok):\n{"studies":[]}');
+  assert.equal(seen[1].at(-1).role, 'tool'); assert.equal(seen[1].at(-1).tool_call_id, 'c1'); assert.equal(seen[1].at(-1).content, '{"studies":[]}');
   assert.equal(r.actualUsd, 0.0008, 'gpt-oss-120b on Workers AI'); assert.equal(r.model, '@cf/openai/gpt-oss-120b');
 });
 
@@ -94,9 +94,16 @@ test('agent loop: stops before passing the cost cap and after 6 tool steps', asy
   const huge = [{ role: 'user', content: 'x'.repeat(1_000_000) }];
   const capped = await agentTurn(env() as any, huge, 'q');
   assert.equal(capped.answer, null); assert.match(capped.error!, new RegExp(`\\$${AGENT_CAP_USD} cap`));
-  const loop = { choices: [{ message: { content: '{"tool":"read_doc","args":{"key":"rag/index.json"}}' } }], usage: { prompt_tokens: 10, completion_tokens: 10 } };
+  const loop = { choices: [{ message: { content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'read_doc', arguments: '{"key":"rag/index.json"}' } }] } }], usage: { prompt_tokens: 10, completion_tokens: 10 } };
   const r = await agentTurn(env({ AI: { run: async () => loop } }) as any, [], 'q');
   assert.match(r.error!, /after 6 tool steps/); assert.equal(r.tools.length, 6);
+});
+
+test('fallback: a failing Groq call moves the step to Workers AI and reports that model', async () => {
+  const badGroq = (async () => ({ ok: false, status: 401, json: async () => ({ error: { message: 'Invalid API Key' } }) })) as any;
+  const e = env({ AI: { run: async () => ({ choices: [{ message: { content: 'from workers ai' } }], usage: { prompt_tokens: 100, completion_tokens: 10 } }) } });
+  const r = await agentTurn(e as any, [], 'q', withFallback(groqModel('bad', badGroq), workersAiModel(e.AI as any)));
+  assert.equal(r.answer, 'from workers ai'); assert.equal(r.model, '@cf/openai/gpt-oss-120b'); assert.equal(r.error, null);
 });
 
 test('groq model: gpt-oss-120b at Groq, key only in the Authorization header, priced at Groq rates', async () => {

@@ -11,9 +11,13 @@ import { ASTRAS_PERSONA } from './astras-prompt';
 export const AGENT_CAP_USD = 0.1;
 
 // ---------------- model (injected, so tools never hold the key) ----------------
-type ChatMsg = { role: string; content: string };
-export type ModelResult = { text: string; inTok: number | null; outTok: number | null };
+// gpt-oss uses NATIVE tool calling (verified against the real model): with tools described only in text it
+// routes the call to a hidden channel and returns content: null.
+type ChatMsg = { role: string; content: string | null; tool_calls?: any[]; tool_call_id?: string };
+export type ToolCall = { id: string; name: string; arguments: string; raw: any };
+export type ModelResult = { text: string; toolCalls: ToolCall[]; inTok: number | null; outTok: number | null };
 export type Model = { name: string; inPerM: number; outPerM: number; call(messages: ChatMsg[], maxOut: number): Promise<ModelResult> };
+const toolCalls = (r: any): ToolCall[] => (r?.choices?.[0]?.message?.tool_calls ?? []).map((c: any) => ({ id: c.id, name: c.function?.name, arguments: c.function?.arguments ?? '{}', raw: c }));
 const usage = (u: any): Pick<ModelResult, 'inTok' | 'outTok'> => ({ inTok: u?.prompt_tokens ?? u?.input_tokens ?? null, outTok: u?.completion_tokens ?? u?.output_tokens ?? null });
 /** The answer text from any reply shape: Chat Completions, Responses API (output_text / output[].content[].text) or legacy `response`. */
 export function replyText(r: any): string {
@@ -29,18 +33,27 @@ export function groqModel(key: string, doFetch: typeof fetch = fetch): Model {
   return { name: 'groq/openai/gpt-oss-120b', inPerM: 0.15, outPerM: 0.6, async call(messages, maxOut) {
     const r = await doFetch('https://api.groq.com/openai/v1/chat/completions', { method: 'POST',
       headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: 'openai/gpt-oss-120b', messages, max_completion_tokens: maxOut }) });
+      body: JSON.stringify({ model: 'openai/gpt-oss-120b', messages, tools: TOOLS, max_completion_tokens: maxOut }) });
     const j = await r.json() as any;
     if (!r.ok) throw Error(`Groq ${r.status}: ${j?.error?.message ?? 'request failed'}`);
-    return { text: replyText(j), ...usage(j?.usage) };
+    return { text: replyText(j), toolCalls: toolCalls(j), ...usage(j?.usage) };
   } };
 }
 /** Same model on Workers AI (fallback when no Groq key): $0.35 in / $0.75 out per 1M tokens. */
 export function workersAiModel(ai: Pick<Ai, 'run'>): Model {
   return { name: '@cf/openai/gpt-oss-120b', inPerM: 0.35, outPerM: 0.75, async call(messages, maxOut) {
-    const r = await (ai.run as (m: string, i: unknown) => Promise<any>)('@cf/openai/gpt-oss-120b', { messages, max_completion_tokens: maxOut });
-    return { text: replyText(r), ...usage(r?.usage) };
+    const r = await (ai.run as (m: string, i: unknown) => Promise<any>)('@cf/openai/gpt-oss-120b', { messages, tools: TOOLS, max_completion_tokens: maxOut });
+    return { text: replyText(r), toolCalls: toolCalls(r), ...usage(r?.usage) };
   } };
+}
+/** Groq first; if a Groq call fails, the same step runs on Workers AI (verified end to end), priced at its rates. */
+export function withFallback(primary: Model, backup: Model): Model {
+  let active = primary;
+  return { get name() { return active.name; }, get inPerM() { return active.inPerM; }, get outPerM() { return active.outPerM; },
+    async call(messages, maxOut) {
+      if (active === primary) { try { return await primary.call(messages, maxOut); } catch { active = backup; } }
+      return backup.call(messages, maxOut);
+    } } as Model;
 }
 export const MAX_STEPS = 6;
 const MAX_OUTPUT = 4000, HISTORY_TURNS = 30, CHARS_PER_TOKEN = 3;
@@ -173,50 +186,41 @@ Tools (all read-only): search_data (study export), query_db (one SELECT), read_d
 - rag/index.json lists every study; rag/glossary.md explains every field.
 - You cannot change code, data or settings. Put proposed code in a markdown code block for Tim to apply.
 - Lead with the answer and the numbers. Short paragraphs or bullets.
-
-## Calling a tool
-To use a tool, reply with ONLY one line of JSON and nothing else:
-{"tool":"<name>","args":{...}}
-${TOOLS.map(t => `- ${t.function.name}: ${t.function.description} Args: ${JSON.stringify(t.function.parameters.properties)}`).join('\n')}
-The result comes back in the next message as TOOL RESULT. Use as many tools as you need (up to ${MAX_STEPS}), then give your final answer as normal text (no JSON line).`;
-
-/** A tool request from the model: one JSON line {"tool": name, "args": {...}}, else null (a final answer). */
-export function parseToolCall(text: string): { name: string; args: any } | null {
-  const t = String(text ?? '').trim().replace(/^```(?:json)?\s*|\s*```$/g, '');
-  if (!t.startsWith('{') || !t.endsWith('}')) return null;
-  try { const j = JSON.parse(t); return typeof j?.tool === 'string' ? { name: j.tool, args: j.args ?? {} } : null; } catch { return null; }
-}
+- Use up to ${MAX_STEPS} tool calls, then answer in plain text.`;
 
 // ---------------- the agent turn (the Durable Object itself is in astras-do.ts) ----------------
-// Tools are called through plain chat messages (the JSON line above): the model's native `tools`
-// parameter was rejected by Workers AI (7003 User Input Error), plain messages work.
-type Msg = { role: string; content: string };
+type Msg = ChatMsg;
 export type AgentReply = { answer: string | null; error: string | null; tools: { name: string; ok: boolean; detail: string }[]; actualUsd: number | null; estimatedUsd: number; sources: string[]; model: string };
 
 /** The tool loop, separate from storage so it can be tested with a fake model. */
 export async function agentTurn(env: AgentEnv, history: Msg[], question: string, model: Model = workersAiModel(env.AI), doFetch: typeof fetch = fetch): Promise<AgentReply> {
   const messages: Msg[] = [{ role: 'system', content: ASTRAS_PERSONA + '\n' + AGENT_RULES }, ...history, { role: 'user', content: question }];
-  const tools: AgentReply['tools'] = [], sources = new Set<string>(), ASTRA_MODEL = model.name;
+  const tools: AgentReply['tools'] = [], sources = new Set<string>();
   const estimateUsd = (inTok: number, outTok: number) => (inTok * model.inPerM + outTok * model.outPerM) / 1e6;
   let usd = 0, known = true;
   for (let step = 0; step < MAX_STEPS; step++) {
     const est = estimateUsd(JSON.stringify(messages).length / CHARS_PER_TOKEN, MAX_OUTPUT);
-    if (usd + est > AGENT_CAP_USD) return { answer: null, error: `stopped: the next step would pass the $${AGENT_CAP_USD} cap`, tools, actualUsd: known ? r3(usd) : null, estimatedUsd: r3(usd + est), sources: [...sources], model: ASTRA_MODEL };
+    if (usd + est > AGENT_CAP_USD) return { answer: null, error: `stopped: the next step would pass the $${AGENT_CAP_USD} cap`, tools, actualUsd: known ? r3(usd) : null, estimatedUsd: r3(usd + est), sources: [...sources], model: model.name };
     let res: ModelResult;
     try { res = await model.call(messages, MAX_OUTPUT); }
-    catch (e) { return { answer: null, error: `model call failed: ${e instanceof Error ? e.message.slice(0, 300) : 'unknown error'}`, tools, actualUsd: known ? r3(usd) : null, estimatedUsd: r3(usd), sources: [...sources], model: ASTRA_MODEL }; }
+    catch (e) { return { answer: null, error: `model call failed: ${e instanceof Error ? e.message.slice(0, 300) : 'unknown error'}`, tools, actualUsd: known ? r3(usd) : null, estimatedUsd: r3(usd), sources: [...sources], model: model.name }; }
     if (res.inTok != null && res.outTok != null) usd += estimateUsd(res.inTok, res.outTok); else { known = false; usd += est; }
-    const text = res.text, call = parseToolCall(text);
-    if (!call && !text.trim()) return { answer: null, error: 'the model returned an empty reply', tools, actualUsd: known ? r3(usd) : null, estimatedUsd: r3(usd), sources: [...sources], model: ASTRA_MODEL };
-    if (!call) return { answer: text, error: null, tools, actualUsd: known ? r3(usd) : null, estimatedUsd: r3(usd), sources: [...sources], model: ASTRA_MODEL };
-    const { name, args } = call, r = await runTool(env, name, args, doFetch);
-    if (name === 'read_code' && r.ok && args.path) sources.add(`${CODE_REPO}/${args.branch ?? 'main'}/${args.path}`);
-    if (name === 'read_doc' && r.ok) sources.add(String(args.key));
-    if (name === 'search_data' && r.ok) for (const m of r.out.matchAll(/^--- (\S+)/gm)) sources.add(m[1]);
-    tools.push({ name, ok: r.ok, detail: name === 'query_db' ? String(args.sql ?? '').slice(0, 300) : String(args.query ?? args.key ?? (args.path ? `${args.branch ?? 'main'}:${args.path}` : `list ${args.branch ?? 'main'}`)).slice(0, 200) });
-    messages.push({ role: 'assistant', content: text }, { role: 'user', content: `TOOL RESULT (${name}, ${r.ok ? 'ok' : 'error'}):\n${r.out}` });
+    const text = res.text;
+    if (!res.toolCalls.length) return text.trim()
+      ? { answer: text, error: null, tools, actualUsd: known ? r3(usd) : null, estimatedUsd: r3(usd), sources: [...sources], model: model.name }
+      : { answer: null, error: 'the model returned an empty reply', tools, actualUsd: known ? r3(usd) : null, estimatedUsd: r3(usd), sources: [...sources], model: model.name };
+    messages.push({ role: 'assistant', content: text || '', tool_calls: res.toolCalls.map(c => c.raw) });
+    for (const c of res.toolCalls) {
+      let args: any = {}; try { args = JSON.parse(c.arguments || '{}'); } catch { /* bad JSON -> the tool reports it */ }
+      const name = c.name, r = await runTool(env, name, args, doFetch);
+      if (name === 'read_code' && r.ok && args.path) sources.add(`${CODE_REPO}/${args.branch ?? 'main'}/${args.path}`);
+      if (name === 'read_doc' && r.ok) sources.add(String(args.key));
+      if (name === 'search_data' && r.ok) for (const m of r.out.matchAll(/^--- (\S+)/gm)) sources.add(m[1]);
+      tools.push({ name, ok: r.ok, detail: name === 'query_db' ? String(args.sql ?? '').slice(0, 300) : String(args.query ?? args.key ?? (args.path ? `${args.branch ?? 'main'}:${args.path}` : `list ${args.branch ?? 'main'}`)).slice(0, 200) });
+      messages.push({ role: 'tool', tool_call_id: c.id, content: r.out });
+    }
   }
-  return { answer: null, error: `stopped after ${MAX_STEPS} tool steps without a final answer`, tools, actualUsd: known ? r3(usd) : null, estimatedUsd: r3(usd), sources: [...sources], model: ASTRA_MODEL };
+  return { answer: null, error: `stopped after ${MAX_STEPS} tool steps without a final answer`, tools, actualUsd: known ? r3(usd) : null, estimatedUsd: r3(usd), sources: [...sources], model: model.name };
 }
 const r3 = (x: number) => Math.round(x * 10000) / 10000;   // 4 decimals: cheap models cost fractions of a cent
 export { HISTORY_TURNS };
