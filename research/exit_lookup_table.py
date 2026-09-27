@@ -26,7 +26,7 @@ def situation(ep, t):
     return next(n for lo, hi, n in CHG if lo <= chg < hi), next(n for lo, hi, n in ACT if lo <= act <= hi), bool(ep.tags['mayhem'])
 
 
-def plan_returns(rel_path, prices, e):
+def plan_returns(rel_path, prices, e, TPS=TPS, SLS=SLS, TMAX=TMAX):
     """Net % for every (tp, sl, tmax) plan on one trade; exits fill 2 s after the trigger."""
     out = {}
     for T in TMAX:
@@ -44,14 +44,20 @@ def plan_returns(rel_path, prices, e):
 
 def main():
     ap = argparse.ArgumentParser(); ap.add_argument('--db', required=True); ap.add_argument('--t', type=int, default=45)
-    ap.add_argument('--out', default='artifacts/exit-lookup.json'); a = ap.parse_args(); t = a.t
+    ap.add_argument('--out', default='artifacts/exit-lookup.json')
+    # The window to optimise over (Tim): take-profit %, stop % (positive numbers) and time limits in seconds.
+    ap.add_argument('--tp', default=','.join(map(str, TPS)), help='take-profit grid, e.g. 5,10,15,20,30,50,100')
+    ap.add_argument('--sl', default=','.join(map(str, SLS)), help='stop grid (positive), e.g. 3,5,10,15,25')
+    ap.add_argument('--tmax', default=','.join(map(str, TMAX)), help='time-limit grid in seconds, e.g. 30,60,120,180,600')
+    a = ap.parse_args(); t = a.t
+    tps, sls, tms = ([float(x) for x in g.split(',')] for g in (a.tp, a.sl, a.tmax)); tms = [int(x) for x in tms]
     eps = sorted((ep for ep in E.load_episodes(a.db, min_traded=1) if not ep.anomaly and (ep.volume[t - 29:t + 1] > 0).any()), key=lambda ep: ep.created)
     rows = []
     for ep in eps:
         e = t + E.LATENCY_S; end = min(E.WINDOW_S, e + E.HOLD_S); pe = ep.price[e]
         rel = (ep.price[e:end + 1] / pe - 1) * 100; k = int(np.argmax(rel))
         rows.append({'key': situation(ep, t), 'peak': rel[k], 'secs': k, 'drop': rel[:k + 1].min(),
-                     'v3': E.simulate(ep, E.rules_v3(), decision_t=t).net_return_pct(), 'plans': plan_returns(rel, ep.price, e)})
+                     'v3': E.simulate(ep, E.rules_v3(), decision_t=t).net_return_pct(), 'plans': plan_returns(rel, ep.price, e, tps, sls, tms)})
     cut = int(len(rows) * 0.7); train, test = rows[:cut], rows[cut:]
 
     def group(sel, keyf):
@@ -79,7 +85,7 @@ def main():
                           'rules_v3_test_avg_pct': round(float(np.mean([r['v3'] for r in tg])), 1) if tg else None})
     doc = {'what': 'Exit lookup: situation at the decision second -> after-entry outcomes and the best take-profit/stop/time plan',
            'decision_second_after_launch': t, 'fill_delay_s': E.LATENCY_S, 'cost_round_trip_pct': round(2 * C * 100, 2),
-           'launches': len(rows), 'train': len(train), 'test': len(test), 'rows': table}
+           'grid': {'take_profit_pct': tps, 'stop_pct': [-x for x in sls], 'time_limit_s': tms}, 'launches': len(rows), 'train': len(train), 'test': len(test), 'rows': table}
     os.makedirs(os.path.dirname(a.out) or '.', exist_ok=True); json.dump(doc, open(a.out, 'w'), indent=1)
     print(f'{len(rows)} launches · {len(table)} lookup rows -> {a.out}')
     for r in [x for x in table if x['level'] == 'change'][:8]:
