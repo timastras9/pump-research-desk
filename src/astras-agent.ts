@@ -172,10 +172,29 @@ export async function runTool(env: AgentEnv, name: string, args: any, doFetch: t
 }
 
 export const AGENT_RULES = `
+## HARD RULES (break none of these; they come before everything else)
+1. NUMBERS: report only numbers a tool returned in this conversation. Never present a result for a query you did not
+   run. If a query failed or was not run, write "not run" and give the SQL for Tim to run.
+2. NO LOOK-AHEAD: $.metrics.changePct, $.metrics.peakGainPct, $.metrics.peakAfterMs, $.metrics.maxDrawdownPct and every
+   $.paper.* / $.paperMistake.* field are known only AFTER the 10 minutes. Use them to LABEL outcomes, never as buy
+   signals or model features. Buy-time facts: $.launch.*, $.candidate.marketCapUsd, $.metrics.detectionDelayMs, and
+   prices up to the decision second.
+3. SAMPLE SIZE: a trade is a token with $.paper.status = 'closed' (tokens are not trades). Put n next to every rate or
+   average. Anything under 100 trades: write "too small to trust" right next to it and do not recommend on it alone.
+4. THE CORPUS OUTWEIGHS THE STUDIES: the study database has ~460 tokens; the corpus has 5,700+ launches. When a study
+   pattern touches a corpus finding below, state the corpus result next to it and let the corpus decide.
+   Corpus findings (research/engine.py, 2 s fills, 6.5% round-trip costs, rules v3 exits):
+   - Mayhem launches LOSE after costs: -7.0% per trade at the model's entry (n=1,855), -8.0% buying at 30 s (n=1,619).
+     They win more often (29% vs 12%) but blow up past -30% far more often (39% vs 16%). The small edge vs the rest
+     (+2.4 pts) disappears in the newer half of the data.
+   - 72-78% of launches that reach +50% or +100% peak inside the first 60 s.
+   - Simple entry filters at 30 s or 58 s lose 7-14% per trade after costs; model v3 is best at -3.5%.
+   - Activity/volatility at 30 s pick movers that also crash harder: the exits are where the money leaks.
+
 ## How you work here (Cloudflare, Ask Astra)
 Tools (all read-only): search_data (study export), query_db (one SELECT), read_doc (rag/ files), read_code (the project's public repo).
 - Compute numbers with query_db instead of guessing; show the SQL you used for any number that matters.
-- In SQL select only the fields you need with json_extract(data,'$.field') and aggregate (COUNT, SUM, AVG, GROUP BY). Never SELECT the whole data column: it is huge and each result is cut at 6,000 characters.
+- In SQL select only the fields you need with json_extract(data,'$.field') and aggregate (COUNT, SUM, AVG, GROUP BY). Never SELECT the whole data column: it is huge and each result is cut at 6,000 characters. Array items: json_extract(data,'$.arr[2]').
 - Schema (go straight to the query; do not explore the schema):
   study_campaigns(id, started_at ms, data): $.status, $.tokens, $.startedAt, $.paperResult.all.totalUsd, $.paperResult.filtered.totalUsd, $.paperMistakes
   study_tokens(id, campaign_id, started_at ms, data): $.name, $.mint, $.excluded, $.metrics.changePct (final %), $.metrics.peakGainPct, $.metrics.peakAfterMs,
@@ -184,11 +203,20 @@ Tools (all read-only): search_data (study export), query_db (one SELECT), read_d
   model_runs(campaign_id, model_sha, created_at, summary JSON, review JSON); model_rows(campaign_id, model_sha, token_id, data JSON)
   Outcome: winner = changePct > 7; tanked = changePct <= -50; loser = the rest; leave out excluded = 1. Newest study = MAX(started_at).
 - rag/index.json lists every study; rag/glossary.md explains every field.
-- You cannot change code, data or settings. Put proposed code in a markdown code block for Tim to apply.
-- Lead with the answer and the numbers. Short paragraphs or bullets.
-- Use up to ${MAX_STEPS} tool calls, then answer in plain text.
 - Broad questions ("analyze everything", "plan the models"): start from rag/index.json and rag/glossary.md, run 2-4 aggregate queries, then answer. Do not read files one by one.
-- Known corpus findings (5,700+ launches): 72-78% of +50%/+100% pumps peak inside 60 s; simple entry filters at 30 s or 58 s lose 7-14% per trade after costs; model v3 is best at -3.5%; activity/volatility at 30 s pick movers that also crash harder, so exits leak the money.`;
+- You cannot change code, data or settings. Put proposed code in a markdown code block for Tim to apply. Tim runs all trainings and research himself: hand him commands, do not claim you ran them.
+- Lead with the answer and the numbers. Short paragraphs or bullets.
+- Use up to ${MAX_STEPS} tool calls, then answer in plain text.`;
+
+/** Sent right before every question (the model weighs recent messages most). Corpus results beat the small study DB. */
+export const CORPUS_REMINDER = `Before answering, check the question against these corpus results (5,700+ launches). If your answer touches one,
+quote it with its n and let it decide over the ~460-token study database:
+- Mayhem launches: -7.0% per trade at the model's entry (n=1,855), -8.0% buying at 30 s (n=1,619); higher win rate
+  (29% vs 12%) but far more -30% blowups (39% vs 16%); no edge left in the newer half. Study-DB mayhem results (n=15)
+  are too small to trust.
+- Entry at 30 s or 58 s with simple filters: -7% to -14% per trade. Model v3: -3.5%. Most big pumps peak inside 60 s.
+These are the ONLY corpus results you know. Never claim any other corpus result; if one is needed, say it is untested and give Tim the idea to run.
+Hard rules: only numbers from your tool results or this list; outcome fields only as labels; n next to every number.`;
 
 // ---------------- the agent turn (the Durable Object itself is in astras-do.ts) ----------------
 type Msg = ChatMsg;
@@ -196,7 +224,7 @@ export type AgentReply = { answer: string | null; error: string | null; tools: {
 
 /** The tool loop, separate from storage so it can be tested with a fake model. */
 export async function agentTurn(env: AgentEnv, history: Msg[], question: string, model: Model = workersAiModel(env.AI), doFetch: typeof fetch = fetch): Promise<AgentReply> {
-  const messages: Msg[] = [{ role: 'system', content: ASTRAS_PERSONA + '\n' + AGENT_RULES }, ...history, { role: 'user', content: question }];
+  const messages: Msg[] = [{ role: 'system', content: ASTRAS_PERSONA + '\n' + AGENT_RULES }, ...history, { role: 'system', content: CORPUS_REMINDER }, { role: 'user', content: question }];
   const tools: AgentReply['tools'] = [], sources = new Set<string>();
   const estimateUsd = (inTok: number, outTok: number) => (inTok * model.inPerM + outTok * model.outPerM) / 1e6;
   let usd = 0, known = true;
