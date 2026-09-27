@@ -1,0 +1,53 @@
+{
+ "launches": 2129,
+ "share_down_30pct_within_10s": 0.232,
+ "share_down_30pct_within_30s": 0.378,
+ "share_fastest_exit_worse_than_-30": 0.075,
+ "median_fastest_exit_gross_pct": 0.0,
+ "crash30_seconds_after_entry_quartiles": [
+  6.0,
+  14.0,
+  46.0
+ ],
+ "share_below_entry_within_5s": 0.546,
+ "fixed_stop_fills": {
+  "-5%": {
+   "triggered_share": 0.804,
+   "median_fill_gross": -12.1,
+   "p10_fill_gross": -46.4,
+   "share_fill_worse_than_-30": 0.235
+  },
+  "-10%": {
+   "triggered_share": 0.743,
+   "median_fill_gross": -18.2,
+   "p10_fill_gross": -49.2,
+   "share_fill_worse_than_-30": 0.3
+  },
+  "-15%": {
+   "triggered_share": 0.687,
+   "median_fill_gross": -24.2,
+   "p10_fill_gross": -52.2,
+   "share_fill_worse_than_-30": 0.391
+  },
+  "-20%": {
+   "triggered_share": 0.636,
+   "median_fill_gross": -30.0,
+   "p10_fill_gross": -55.3,
+   "share_fill_worse_than_-30": 0.501
+  },
+  "-25%": {
+   "triggered_share": 0.597,
+   "median_fill_gross": -34.7,
+   "p10_fill_gross": -58.8,
+   "share_fill_worse_than_-30": 0.641
+  }
+ },
+ "below_entry_within_5s": {
+  "n": 1162,
+  "share_later_down_30_within_30s": 0.557
+ },
+ "not_below_entry_within_5s": {
+  "n": 967,
+  "share_later_down_30_within_30s": 0.162
+ }
+}

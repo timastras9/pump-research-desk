@@ -1,0 +1,21 @@
+#start-form{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-top:18px}#max-tokens,#concurrency{width:100px}#studies button{margin:8px 10px 8px 0}#exclusion-form{display:grid;gap:10px;max-width:750px;margin:20px 0}#exclusion-form button{justify-self:start}#evidence-image{width:100%;max-width:1200px;height:auto;border:1px solid var(--line)}pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:500px;overflow:auto}.mint{overflow-wrap:anywhere}td,th{text-align:left!important}#group-analysis p,#token-analysis p{overflow-wrap:anywhere}.selected{border-color:var(--accent)}#detail[hidden],#token-detail[hidden]{display:none}#frame{padding:0}#token-metrics{display:flex;flex-wrap:wrap;gap:20px}.error{color:var(--red)}
+dl{display:grid;grid-template-columns:1fr 1fr;gap:8px 25px;margin:0}dt{color:var(--muted)}dd{margin:0;font-variant-numeric:tabular-nums}#token-metrics{display:block}h4{text-transform:capitalize;margin-bottom:5px}
+.live-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px;margin:18px 0}.live-token{border:1px solid var(--line);border-radius:8px;padding:16px;min-width:0}.live-token.delayed{border-color:var(--amber)}.live-token p{font-size:.8rem;overflow-wrap:anywhere}.live-token img{width:100%;aspect-ratio:3/2;object-fit:contain;background:#080e12}.preview-empty{height:170px;display:grid;place-items:center;color:var(--muted);background:#080e12}.live-token progress{width:100%;accent-color:var(--accent)}
+
+.path-chart{width:100%;height:auto;display:block;margin:16px 0 4px;background:#0b141a;border:1px solid var(--line);border-radius:8px}.path-chart text{fill:var(--muted);font-size:11px}.chart-legend{font-size:.8rem;color:var(--muted)}button.link{background:none;border:0;padding:0;color:var(--text);text-decoration:underline;font-weight:500}
+.live-token.watch{cursor:pointer}.live-token.watch:hover{border-color:#4a5d69}.live-token.watch.up{border-color:var(--accent)}.live-token.watch.tanked{border-color:var(--red)}.watch-numbers{font-size:.85rem}.watch-numbers .big{font-size:1.4rem;font-weight:650;font-variant-numeric:tabular-nums}.big.up{color:var(--accent)}.big.down,.big.tanked{color:var(--red)}
+.c-winner{color:var(--accent)}.c-loser{color:#6f8593}.c-tanked{color:var(--red)}.c-muted,.c-unscored{color:#91a4af}.c-amber{color:var(--amber)}
+#overview-panel>summary{display:flex;justify-content:space-between;align-items:center;gap:12px;cursor:pointer}#overview-panel>summary h2{margin:0}
+.paper-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px;margin:12px 0}.paper-card{border:1px solid var(--line);border-radius:8px;padding:16px}.paper-card .big{font-size:1.8rem;font-weight:650;margin:4px 0;font-variant-numeric:tabular-nums}
+.c-buy{color:#6cb4ff}.c-sell{color:#c792ea}
+
+.tabs{display:flex;gap:4px}.tabs a{padding:8px 14px;border-radius:6px;color:var(--muted);font-size:.9rem}.tabs a:hover{color:var(--text);background:var(--panel2)}.tabs a[aria-current="page"]{color:var(--text);background:var(--panel2);box-shadow:inset 0 -2px 0 var(--accent)}
+.paper-stats{grid-template-columns:repeat(auto-fit,minmax(200px,1fr));margin-bottom:20px}.paper-stats strong{font-size:1.7rem}
+.paper-charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px}.paper-figure{margin:0}.paper-figure figcaption{font-size:.85rem;color:var(--muted);margin-bottom:6px}
+.path-chart .axis-zero{stroke:#4a5d69}.path-chart .rule-change{stroke:#91a4af;stroke-dasharray:3 4}.path-chart .rule-label,.path-chart .bar-label{font-size:11px;fill:var(--muted)}.path-chart .direct-label{font-size:12px;fill:var(--text)}
+.c-filtered{color:#5fa83a}.c-all{color:#3f7fc0}
+@media(max-width:680px){.tabs a{padding:6px 8px;font-size:.8rem}}
+.chat-suggest{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0 14px}.chat-suggest button{font-size:.85rem}
+.chat-log{display:flex;flex-direction:column;gap:12px;margin-bottom:14px}.chat-turn{border:1px solid #2a3a45;border-radius:10px;padding:10px 14px}.chat-turn.user{background:#15232d}.chat-turn .label{margin:0 0 4px}
+.chat-text{white-space:pre-wrap;margin:0;line-height:1.5}.chat-form{display:flex;gap:10px;align-items:flex-end}.chat-form textarea{flex:1;min-width:0;resize:vertical}
+@media(max-width:680px){.chat-form{flex-direction:column;align-items:stretch}}

@@ -1,0 +1,137 @@
+{
+ "model": "openai/gpt-6-astra",
+ "usage": {
+  "prompt_tokens": 118472,
+  "completion_tokens": 3180,
+  "total_tokens": 121652,
+  "prompt_tokens_details": {
+   "cached_tokens": 0,
+   "cache_write_tokens": 118469,
+   "audio_tokens": 0
+  },
+  "completion_tokens_details": {
+   "reasoning_tokens": 332,
+   "audio_tokens": 0,
+   "accepted_prediction_tokens": 0,
+   "rejected_prediction_tokens": 0
+  }
+ },
+ "verification": [
+  {
+   "claim": "Low max rise before entry is associated with losers.",
+   "verdict": "SUPPORTED",
+   "evidence": "max_rise_so_far_pct: loser_median=5.614, winner_median=18.365, auc_for_loser=0.412. This supports the median association, not a deterministic loser signal."
+  },
+  {
+   "claim": "Mean max rise is 5.59% for losers versus 75.96% for winners.",
+   "verdict": "WRONG",
+   "evidence": "The supplied max_rise_so_far_pct means are loser_mean=585.011 and winner_mean=75.957. The loser mean reverses the median comparison; it is not 5.59."
+  },
+  {
+   "claim": "Low active share and short active time are associated with losers.",
+   "verdict": "SUPPORTED",
+   "evidence": "active_share: medians 0.625 versus 0.857, means 0.594 versus 0.747. active_secs: medians 5 versus 6, means 4.703 versus 5.574, for losers versus winners."
+  },
+  {
+   "claim": "Losers have a lower median recent volume surge.",
+   "verdict": "SUPPORTED",
+   "evidence": "volume_last5_vs_before: loser_median=0.332, winner_median=0.357. However, auc_for_loser=0.482 is weak discrimination, and loser_mean=10.38 exceeds winner_mean=2.057. This does not establish a useful standalone filter."
+  },
+  {
+   "claim": "Lower volatility is associated with losers.",
+   "verdict": "SUPPORTED",
+   "evidence": "volatility_pct: loser_median=5.41, winner_median=14.566, loser_mean=10.194, winner_mean=16.479, auc_for_loser=0.328."
+  },
+  {
+   "claim": "A smaller drop from the recent high is associated with losers.",
+   "verdict": "SUPPORTED",
+   "evidence": "drop_from_high_pct: loser_median=-1.968, winner_median=-10.469, loser_mean=-11.483, winner_mean=-19.287, auc_for_loser=0.601. Losers are nearer their highs on these summaries."
+  },
+  {
+   "claim": "low_max_rise_and_low_activity has measured results of 355 losers avoided, 310 winners lost, 2473 pnl-points saved and 25586 given up.",
+   "verdict": "WRONG",
+   "evidence": "Those results belong to 'active_share < 0.70 and active_secs < 5': losers_avoided='355 (47%)', winners_lost='310 (24%)', pnl_pts_saved=2473, pnl_pts_given_up=25586. The proposed rule adds 'max_rise_so_far_pct < 8'; its results are not supplied."
+  },
+  {
+   "claim": "Adding max_rise_so_far_pct < 8 makes the low-activity rule an effective don't-buy filter.",
+   "verdict": "UNVERIFIABLE",
+   "evidence": "No joint-rule evaluation is supplied. The measured activity-only parent gives up 25586 pnl-points while saving 2473; marginal max-rise medians of 5.614 and 18.365 cannot establish the conjunction's performance."
+  },
+  {
+   "claim": "low_vol_and_low_volume_spike has measured results of 91 losers avoided, 30 winners lost, 572 pnl-points saved and 1548 given up.",
+   "verdict": "WRONG",
+   "evidence": "Those results belong to 'secs_since_launch > 12 and volume_log < 5.5', not 'volatility_pct < 12 and volume_last5_vs_before < 0.35': losers_avoided='91 (12%)', winners_lost='30 (2%)', pnl_pts_saved=572, pnl_pts_given_up=1548."
+  },
+  {
+   "claim": "volatility_pct < 12 and volume_last5_vs_before < 0.35 is an effective don't-buy filter.",
+   "verdict": "UNVERIFIABLE",
+   "evidence": "No evaluation of this conjunction is supplied. The separately tested 'volatility_pct < 8' avoids '429 (57%)' losers but loses '402 (31%)' winners, saving 2851 pnl-points while giving up 32674."
+  },
+  {
+   "claim": "secs_since_launch > 12 and volume_log < 5.5 avoids 91 losers and loses 30 winners.",
+   "verdict": "SUPPORTED",
+   "evidence": "The exact tested rule reports losers_avoided='91 (12%)' and winners_lost='30 (2%)'."
+  },
+  {
+   "claim": "The late, low-volume rule is a clean slice worth deploying as a don't-buy rule.",
+   "verdict": "WRONG",
+   "evidence": "It is explicitly in rules_already_tested_and_rejected: pnl_pts_saved=572 versus pnl_pts_given_up=1548. Its loser avoidance does not justify deployment under the supplied pnl-points objective."
+  },
+  {
+   "claim": "Wait about 20 seconds before buying.",
+   "verdict": "WRONG",
+   "evidence": "Without filtering, wait_s=5 gives loser_share=0.366, avg_best_pnl=89.5, avg_target_pnl=88; wait_s=10 gives 0.412, 88.1, 86.7; wait_s=20 gives 0.472, 76.9, 75.7. With the model at threshold=0.7, wait_s=5 gives filt_avg=71.4 and filt_pnl_pts=38249, versus wait_s=20 with filt_avg=68.5 and filt_pnl_pts=33885. The recommendation overlooks better supplied early-wait results."
+  },
+  {
+   "claim": "The unfiltered 20-second result is better than 30 or 60 seconds, and longer waits increase loser share and reduce average P&L.",
+   "verdict": "SUPPORTED",
+   "evidence": "For wait_s=5,10,15,20,30,60, loser_share is 0.366,0.412,0.447,0.472,0.51,0.577 and avg_best_pnl is 89.5,88.1,82.6,76.9,62.6,49.4. This supports the unfiltered comparison, not selecting 20 over 5."
+  },
+  {
+   "claim": "The listed max-rise, activity, volume-ratio, volatility and drawdown KPIs are new metrics to collect.",
+   "verdict": "WRONG",
+   "evidence": "These already exist as decision-time kpi_* columns and in the comparison table: loser medians include max_rise_so_far_pct=5.614, active_share=0.625, active_secs=5, volume_last5_vs_before=0.332, volatility_pct=5.41 and drop_from_high_pct=-1.968."
+  },
+  {
+   "claim": "The analysis covers approximately 2500 tokens.",
+   "verdict": "WRONG",
+   "evidence": "Supplied totals are traded=2050, losers=751 and winners=1299, not approximately 2500 traded tokens."
+  },
+  {
+   "claim": "The evidence is from a single day, and filters can discard substantial numbers of winners.",
+   "verdict": "SUPPORTED",
+   "evidence": "The supplied loser launch dates are 2026-09-26. Tested filters lose '402 (31%)', '310 (24%)' and '30 (2%)' winners. Performance on other days is not supplied."
+  }
+ ],
+ "astra_patterns": [
+  {
+   "pattern": "Stagnant participation and limited movement are the clearest marginal warning signs, but rejecting them indiscriminately sacrifices valuable winners.",
+   "evidence": "Loser/winner medians: volatility_pct=5.41/14.566, active_share=0.625/0.857, active_secs=5/6, max_rise_so_far_pct=5.614/18.365. Nevertheless, the tested low-volatility rule saves 2851 pnl-points and gives up 32674; the low-activity rule saves 2473 and gives up 25586."
+  },
+  {
+   "pattern": "Decision-time stagnation can precede fee-bound losses; a high volume ratio alone does not establish sustained demand.",
+   "evidence": "ANTHROPIC has active_secs=2, price_change_since_launch_pct=0, volatility_pct=0, max_gain_after_entry_pct=2.6 and best_pnl_pct=-3.8. LAPDOG has active_secs=2, active_share=0.09, volume_last5_vs_before=17.85, max_gain_after_entry_pct=0.2 and best_pnl_pct=-6.1."
+  },
+  {
+   "pattern": "Visible peaks are not executable profits; buy slippage and short-lived spikes are distinct execution risks.",
+   "evidence": "AppShare has entry_slippage_pct=77, secs_to_below_entry=1 and best_pnl_pct=-70.2. Official Mayham v2 has max_gain_after_entry_pct=68.4 but best_pnl_pct=-27.6, with the supplied reason 'spike shorter than the 2 s sell delay'. These are outcome explanations, not permissible pre-buy features."
+  },
+  {
+   "pattern": "Do not infer blanket bans on mayhem, copycat names or drawdowns from vivid losing examples.",
+   "evidence": "mayhem loser_mean=0.229 versus winner_mean=0.414; copycat_name loser_mean=0.382 versus winner_mean=0.536; drop_from_high_pct loser_median=-1.968 versus winner_median=-10.469. The population summaries do not support treating these attributes alone as loser indicators."
+  },
+  {
+   "pattern": "The supplied model filter is a more promising selective-abstention candidate than the rejected simple thresholds, but improves average trade quality rather than total supplied pnl-points.",
+   "evidence": "At wait_s=5 and threshold=0.7 on the newest holdout: test_bought=615, test_losers=259, winners_total=356, test_pnl_pts=38435; filt_bought=536, filt_losers=192, filt_winners=344, filt_pnl_pts=38249. filt_avg=71.4 versus nofilt_avg=62.5."
+  }
+ ],
+ "astra_rules": [
+  {
+   "name": "research_only_joint_stagnation_not_for_deployment",
+   "expr": "volatility_pct < 8 and active_share < 0.70 and active_secs < 5 and max_rise_so_far_pct < 8",
+   "why": "A candidate abstention predicate for prospective testing, not an established don't-buy rule. It combines the supported marginal stagnation signals. No measured results for this conjunction are supplied. Its low-volatility and low-activity components were already rejected individually: saved/given-up pnl-points were 2851/32674 and 2473/25586. Do not deploy unless a chronological evaluation shows acceptable lost-winner value and net performance."
+  }
+ ],
+ "wait_advice": "Keep approximately 5 s as the decision checkpoint rather than automatically waiting 10 or 20 s. Among supplied unfiltered tests, 5 s has loser_share=0.366, avg_best_pnl=89.5 and avg_target_pnl=88; at 10 s these are 0.412, 88.1 and 86.7. The model-filtered 5 s result also has filt_avg=71.4 versus 63.5 at 10 s and 68.5 at 20 s. For selective abstention, prioritize reproducing and prospectively validating the existing threshold=0.7 model at 5 s; its score definition is not supplied, so it cannot be honestly translated into an allowed-feature Boolean rule here. If a token fails a validated gate, skip it rather than assume waiting will repair it. No conditional re-entry delay is established. Keep decision time separate from the supplied 2 s buy-fill delay. The 5 s checkpoint is best among the tested settings, not a proven global optimum.",
+ "caveat": "There is no supplied deterministic pre-buy rule demonstrated to improve total pnl-points. All loser_rows are selected losers; winner-level rows, joint-rule results, model specification and full price paths are absent. Marginal comparisons cannot prove conjunction performance or causal effects. Use only decision-time KPIs for gating, never entry slippage, future peaks, best fills or loser_reason. Treat best-P&L summaries as hindsight-dependent opportunity metrics rather than guaranteed live returns, and validate the target exit policy with costs and delays. The supplied model filter improves average P&L but lowers total pnl-points at 5 s from 38435 to 38249. Any deployment decision must explicitly choose between trade quality, capital usage, downside exposure and total profit."
+}

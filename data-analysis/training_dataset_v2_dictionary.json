@@ -1,0 +1,187 @@
+[
+ {
+  "column": "token",
+  "role": "id",
+  "definition": ""
+ },
+ {
+  "column": "mint",
+  "role": "id",
+  "definition": ""
+ },
+ {
+  "column": "launched",
+  "role": "id",
+  "definition": ""
+ },
+ {
+  "column": "decision_sec",
+  "role": "feature",
+  "definition": "second after launch when we decided to buy (fill happens latency_s later)"
+ },
+ {
+  "column": "price_change_since_launch_pct",
+  "role": "feature",
+  "definition": "price change launch -> decision"
+ },
+ {
+  "column": "active_secs",
+  "role": "feature",
+  "definition": "seconds with >=1 trade before the decision"
+ },
+ {
+  "column": "active_share",
+  "role": "feature",
+  "definition": "share of seconds with trades before the decision"
+ },
+ {
+  "column": "volume_log",
+  "role": "feature",
+  "definition": "log(1+volume) before the decision"
+ },
+ {
+  "column": "volume_last5_vs_before",
+  "role": "feature",
+  "definition": "last-5 s volume vs earlier 5 s average"
+ },
+ {
+  "column": "volatility_pct",
+  "role": "feature",
+  "definition": "std of 1 s log returns x100 before the decision"
+ },
+ {
+  "column": "max_rise_so_far_pct",
+  "role": "feature",
+  "definition": "highest price so far vs launch"
+ },
+ {
+  "column": "drop_from_high_pct",
+  "role": "feature",
+  "definition": "price at decision vs high so far"
+ },
+ {
+  "column": "first_move_up",
+  "role": "feature",
+  "definition": "1 if the first trade moved price up"
+ },
+ {
+  "column": "fee_routed",
+  "role": "feature",
+  "definition": "creator fees routed to an X account"
+ },
+ {
+  "column": "mayhem",
+  "role": "feature",
+  "definition": "pump.fun Mayhem mode"
+ },
+ {
+  "column": "terminal",
+  "role": "feature",
+  "definition": "launched from a trading terminal"
+ },
+ {
+  "column": "copycat_name",
+  "role": "feature",
+  "definition": "an EARLIER launch had the same name (as of the decision)"
+ },
+ {
+  "column": "name_len",
+  "role": "feature",
+  "definition": "token name length"
+ },
+ {
+  "column": "label_buy",
+  "role": "label",
+  "definition": "1 = a positive exit existed after the 2 s delay and costs (winner); 0 = no-trade (loser)"
+ },
+ {
+  "column": "target_exit_sec",
+  "role": "label",
+  "definition": "pull-out DECISION second taught to the sell model (fills latency_s later); earliest sell decision = entry_fill_sec + 1"
+ },
+ {
+  "column": "target_exit_pct",
+  "role": "label",
+  "definition": "target exit fill vs entry %: within 10 pts of the peak AND net-positive after costs (winners)"
+ },
+ {
+  "column": "entry_fill_sec",
+  "role": "eval_only",
+  "definition": "second the buy filled"
+ },
+ {
+  "column": "decision_price",
+  "role": "eval_only",
+  "definition": ""
+ },
+ {
+  "column": "entry_price",
+  "role": "eval_only",
+  "definition": ""
+ },
+ {
+  "column": "entry_slippage_pct",
+  "role": "eval_only",
+  "definition": "fill vs decision price (outcome of the delay)"
+ },
+ {
+  "column": "peak_sec",
+  "role": "eval_only",
+  "definition": ""
+ },
+ {
+  "column": "peak_pct",
+  "role": "eval_only",
+  "definition": "highest price after entry vs entry %"
+ },
+ {
+  "column": "best_fill_sec",
+  "role": "eval_only",
+  "definition": ""
+ },
+ {
+  "column": "best_pnl_pct",
+  "role": "eval_only",
+  "definition": "best realistic P&L after the delay and costs"
+ },
+ {
+  "column": "target_exit_pnl_pct",
+  "role": "eval_only",
+  "definition": "P&L at the target exit after costs"
+ },
+ {
+  "column": "min_loss_pct",
+  "role": "eval_only",
+  "definition": "least-bad exit for losers"
+ },
+ {
+  "column": "secs_to_below_entry",
+  "role": "eval_only",
+  "definition": ""
+ },
+ {
+  "column": "crossed_below_entry",
+  "role": "eval_only",
+  "definition": "1 if price fell below entry before observation_end_sec, else 0 (censored at the end)"
+ },
+ {
+  "column": "observation_end_sec",
+  "role": "eval_only",
+  "definition": "last second observed for this trade (entry + 600 s, max 720)"
+ },
+ {
+  "column": "loser_reason",
+  "role": "eval_only",
+  "definition": "code-computed cause of a loser"
+ },
+ {
+  "column": "result",
+  "role": "eval_only",
+  "definition": "winner / winner-latency-gap / loser"
+ },
+ {
+  "column": "latency_s",
+  "role": "eval_only",
+  "definition": ""
+ }
+]

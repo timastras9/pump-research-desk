@@ -1,0 +1,72 @@
+[
+ {
+  "wait_s": 5,
+  "threshold": 0.7,
+  "test_bought": 615,
+  "test_losers": 259,
+  "test_pnl_pts": 38435,
+  "filt_bought": 536,
+  "filt_losers": 192,
+  "filt_winners": 344,
+  "winners_total": 356,
+  "filt_pnl_pts": 38249,
+  "filt_avg": 71.4,
+  "nofilt_avg": 62.5
+ },
+ {
+  "wait_s": 10,
+  "threshold": 0.7,
+  "test_bought": 620,
+  "test_losers": 281,
+  "test_pnl_pts": 33624,
+  "filt_bought": 527,
+  "filt_losers": 209,
+  "filt_winners": 318,
+  "winners_total": 339,
+  "filt_pnl_pts": 33467,
+  "filt_avg": 63.5,
+  "nofilt_avg": 54.2
+ },
+ {
+  "wait_s": 15,
+  "threshold": 0.7,
+  "test_bought": 618,
+  "test_losers": 293,
+  "test_pnl_pts": 32893,
+  "filt_bought": 520,
+  "filt_losers": 217,
+  "filt_winners": 303,
+  "winners_total": 325,
+  "filt_pnl_pts": 32695,
+  "filt_avg": 62.9,
+  "nofilt_avg": 53.2
+ },
+ {
+  "wait_s": 20,
+  "threshold": 0.7,
+  "test_bought": 618,
+  "test_losers": 311,
+  "test_pnl_pts": 34069,
+  "filt_bought": 495,
+  "filt_losers": 209,
+  "filt_winners": 286,
+  "winners_total": 307,
+  "filt_pnl_pts": 33885,
+  "filt_avg": 68.5,
+  "nofilt_avg": 55.1
+ },
+ {
+  "wait_s": 30,
+  "threshold": 0.7,
+  "test_bought": 602,
+  "test_losers": 332,
+  "test_pnl_pts": 24374,
+  "filt_bought": 438,
+  "filt_losers": 202,
+  "filt_winners": 236,
+  "winners_total": 270,
+  "filt_pnl_pts": 23204,
+  "filt_avg": 53.0,
+  "nofilt_avg": 40.5
+ }
+]

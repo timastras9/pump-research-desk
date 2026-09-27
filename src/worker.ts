@@ -1,6 +1,9 @@
+export { StudyCoordinator, StudyRecorder } from './study-collector';
 import { observe, scanExplore, type Frame } from './observer';
 import { timingSafeEqual } from 'node:crypto';
 import { costs } from './research-model';
+import { askAstra, type ChatEnv, type ChatTurn } from './astra-chat';
+import { exportStudy } from './rag-export';
 import { DurableObject } from 'cloudflare:workers';
 import { buy, close, equity, event, initialState, processTick, rejectionReasons, validateRules, type DeskState } from './engine';
 import { discover, mintPattern, quotes } from './market';
@@ -214,6 +217,50 @@ async function route(request: Request, env: Env): Promise<Response> {
   if (path.startsWith('/api/')) {
     if (!access) return json({ error: 'Sign in to your research desk.' }, 401);
     if (path === '/api/logout' && request.method === 'POST') return json({ ok: true }, 200, { 'Set-Cookie': 'desk_session=; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=0' });
+    if(path.startsWith('/api/studies')) {
+      const studies=env.STUDIES.getByName('timastras9');
+      if(path==='/api/studies/media' && request.method==='GET') {
+        const key=url.searchParams.get('key')??'';
+        if(!key.startsWith('studies/') || key.includes('..') || key.length>300)return json({error:'Invalid evidence key.'},400);
+        const object=await env.CRYPTO_MEDIA.get(key);
+        if(!object)return json({error:'Evidence not found.'},404);
+        return new Response(object.body,{headers:{'Content-Type':object.httpMetadata?.contentType??'application/octet-stream'}});
+      }
+      if(path==='/api/studies' && request.method==='GET')return json({...await studies.list(),status:await studies.status()});
+      if(path==='/api/studies/status' && request.method==='GET')return json(await studies.status());
+      if(path==='/api/studies/token' && request.method==='GET')return json(await studies.token(url.searchParams.get('id')??''));
+      if(path==='/api/studies/flag' && request.method==='POST'){const input=await body(request);if(typeof input.id!=='string'||typeof input.excluded!=='boolean'||typeof input.reason!=='string')return json({error:'Invalid exclusion update.'},400);return json(await studies.flag(input.id,input.excluded,input.reason));}
+      if(path==='/api/studies/start' && request.method==='POST')return json(await studies.start(await body(request)));
+      if(path==='/api/studies/paper-auto' && request.method==='POST'){const input=await body(request);if(typeof input.enabled!=='boolean')return json({error:'enabled must be true or false.'},400);return json(await studies.setPaperAuto(input.enabled));}
+      if(path==='/api/studies/paper-rules' && request.method==='POST')return json(await studies.setPaperRules(await body(request)));
+      if(path==='/api/studies/overview' && request.method==='GET')return json(await studies.overview());
+      if(path==='/api/studies/detail' && request.method==='GET')return json(await studies.detail(url.searchParams.get('id')??''));
+      if(path==='/api/studies/model' && request.method==='GET')return json(await studies.modelOverview());
+      if(path==='/api/studies/model-run' && request.method==='GET'){const campaign=url.searchParams.get('campaign')??'',sha=url.searchParams.get('sha')??'';const r=await studies.modelRun(campaign,sha);
+        const out={run:JSON.parse(r.run),review:r.review?JSON.parse(r.review):null};
+        return url.searchParams.get('download')==='1'?json({...out.run,astraReview:out.review},200,{'Content-Disposition':`attachment; filename="model-run-${campaign}-${sha}.json"`}):json(out);}
+      if(path==='/api/studies/model-activate' && request.method==='POST'){const input=await body(request);if(typeof input.key!=='string'||typeof input.by!=='string')return json({error:'key and by are required.'},400);return json(await studies.setActiveModel(input.key,input.by));}
+      if(path==='/api/studies/model-eval' && request.method==='POST'){const input=await body(request);if(typeof input.campaignId!=='string')return json({error:'campaignId is required.'},400);return json(await studies.queueModelRun(input.campaignId));}
+      if(path==='/api/studies/stop' && request.method==='POST'){const input=await body(request);return json(await studies.stop(typeof input.id==='string'?input.id:undefined));}
+      return json({error:'Study route not found.'},404);
+    }
+    // Ask Astra tab: questions over the RAG export; sync re-exports one study from D1 to R2 (rag/).
+    if (path === '/api/chat' && request.method === 'POST') {
+      const input = await body(request);
+      if (typeof input.question !== 'string' || !input.question.trim() || input.question.length > 4000) return json({ error: 'Ask a question (up to 4,000 characters).' }, 400);
+      const history = (Array.isArray(input.history) ? input.history : []).filter((t): t is ChatTurn => !!t && (t.role === 'user' || t.role === 'assistant') && typeof t.content === 'string');
+      return json(await askAstra(env as unknown as ChatEnv, input.question.trim(), history));
+    }
+    if (path === '/api/rag/studies' && request.method === 'GET') {
+      const rows = (await env.CRYPTO_STUDY.prepare('SELECT id, started_at FROM study_campaigns ORDER BY started_at DESC').all<{ id: string; started_at: number }>()).results;
+      const idx = await env.CRYPTO_MEDIA.get('rag/index.json');
+      return json({ studies: rows, index: idx ? await idx.json() : null, aiSearchInstance: (env as unknown as ChatEnv).AI_SEARCH_INSTANCE || null });
+    }
+    if (path === '/api/rag/sync' && request.method === 'POST') {
+      const input = await body(request);
+      if (typeof input.id !== 'string') return json({ error: 'id is required.' }, 400);
+      return json(await exportStudy(env.CRYPTO_STUDY, env.CRYPTO_MEDIA, input.id));
+    }
     if (path === '/api/state' && request.method === 'GET') return json(await desk.snapshot());
     if (path === '/api/export' && request.method === 'GET') return json(await desk.snapshot(), 200, { 'Content-Disposition': 'attachment; filename="pump-research.json"' });
     if (path === '/api/discover' && request.method === 'GET') {
