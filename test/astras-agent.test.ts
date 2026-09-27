@@ -96,7 +96,7 @@ test('agent loop: stops before passing the cost cap and after 6 tool steps', asy
   assert.equal(capped.answer, null); assert.match(capped.error!, new RegExp(`\\$${AGENT_CAP_USD} cap`));
   const loop = { choices: [{ message: { content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'read_doc', arguments: '{"key":"rag/index.json"}' } }] } }], usage: { prompt_tokens: 10, completion_tokens: 10 } };
   const r = await agentTurn(env({ AI: { run: async () => loop } }) as any, [], 'q');
-  assert.match(r.error!, /after 6 tool steps/); assert.equal(r.tools.length, 6);
+  assert.match(r.error!, /empty reply/); assert.equal(r.tools.length, 11, 'last step has tools off');
 });
 
 test('fallback: a failing Groq call moves the step to Workers AI and reports that model', async () => {

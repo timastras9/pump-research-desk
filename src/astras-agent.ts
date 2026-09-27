@@ -16,7 +16,7 @@ export const AGENT_CAP_USD = 0.1;
 type ChatMsg = { role: string; content: string | null; tool_calls?: any[]; tool_call_id?: string };
 export type ToolCall = { id: string; name: string; arguments: string; raw: any };
 export type ModelResult = { text: string; toolCalls: ToolCall[]; inTok: number | null; outTok: number | null };
-export type Model = { name: string; inPerM: number; outPerM: number; call(messages: ChatMsg[], maxOut: number): Promise<ModelResult> };
+export type Model = { name: string; inPerM: number; outPerM: number; call(messages: ChatMsg[], maxOut: number, useTools?: boolean): Promise<ModelResult> };
 const toolCalls = (r: any): ToolCall[] => (r?.choices?.[0]?.message?.tool_calls ?? []).map((c: any) => ({ id: c.id, name: c.function?.name, arguments: c.function?.arguments ?? '{}', raw: c }));
 const usage = (u: any): Pick<ModelResult, 'inTok' | 'outTok'> => ({ inTok: u?.prompt_tokens ?? u?.input_tokens ?? null, outTok: u?.completion_tokens ?? u?.output_tokens ?? null });
 /** The answer text from any reply shape: Chat Completions, Responses API (output_text / output[].content[].text) or legacy `response`. */
@@ -30,10 +30,10 @@ export function replyText(r: any): string {
 }
 /** gpt-oss-120b on Groq (OpenAI-compatible API). List price used for the cap: $0.15 in / $0.60 out per 1M tokens. */
 export function groqModel(key: string, doFetch: typeof fetch = fetch): Model {
-  return { name: 'groq/openai/gpt-oss-120b', inPerM: 0.15, outPerM: 0.6, async call(messages, maxOut) {
+  return { name: 'groq/openai/gpt-oss-120b', inPerM: 0.15, outPerM: 0.6, async call(messages, maxOut, useTools = true) {
     const r = await doFetch('https://api.groq.com/openai/v1/chat/completions', { method: 'POST',
       headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: 'openai/gpt-oss-120b', messages, tools: TOOLS, max_completion_tokens: maxOut }) });
+      body: JSON.stringify({ model: 'openai/gpt-oss-120b', messages, ...(useTools ? { tools: TOOLS } : {}), max_completion_tokens: maxOut }) });
     const j = await r.json() as any;
     if (!r.ok) throw Error(`Groq ${r.status}: ${j?.error?.message ?? 'request failed'}`);
     return { text: replyText(j), toolCalls: toolCalls(j), ...usage(j?.usage) };
@@ -41,8 +41,8 @@ export function groqModel(key: string, doFetch: typeof fetch = fetch): Model {
 }
 /** Same model on Workers AI (fallback when no Groq key): $0.35 in / $0.75 out per 1M tokens. */
 export function workersAiModel(ai: Pick<Ai, 'run'>): Model {
-  return { name: '@cf/openai/gpt-oss-120b', inPerM: 0.35, outPerM: 0.75, async call(messages, maxOut) {
-    const r = await (ai.run as (m: string, i: unknown) => Promise<any>)('@cf/openai/gpt-oss-120b', { messages, tools: TOOLS, max_completion_tokens: maxOut });
+  return { name: '@cf/openai/gpt-oss-120b', inPerM: 0.35, outPerM: 0.75, async call(messages, maxOut, useTools = true) {
+    const r = await (ai.run as (m: string, i: unknown) => Promise<any>)('@cf/openai/gpt-oss-120b', { messages, ...(useTools ? { tools: TOOLS } : {}), max_completion_tokens: maxOut });
     return { text: replyText(r), toolCalls: toolCalls(r), ...usage(r?.usage) };
   } };
 }
@@ -50,12 +50,12 @@ export function workersAiModel(ai: Pick<Ai, 'run'>): Model {
 export function withFallback(primary: Model, backup: Model): Model {
   let active = primary;
   return { get name() { return active.name; }, get inPerM() { return active.inPerM; }, get outPerM() { return active.outPerM; },
-    async call(messages, maxOut) {
-      if (active === primary) { try { return await primary.call(messages, maxOut); } catch { active = backup; } }
-      return backup.call(messages, maxOut);
+    async call(messages, maxOut, useTools = true) {
+      if (active === primary) { try { return await primary.call(messages, maxOut, useTools); } catch { active = backup; } }
+      return backup.call(messages, maxOut, useTools);
     } } as Model;
 }
-export const MAX_STEPS = 6;
+export const MAX_STEPS = 12;   // the last step has tools switched off, so there is always a final answer
 const MAX_OUTPUT = 4000, HISTORY_TURNS = 30, CHARS_PER_TOKEN = 3;
 
 // ---------------- guards (pure) ----------------
@@ -186,7 +186,9 @@ Tools (all read-only): search_data (study export), query_db (one SELECT), read_d
 - rag/index.json lists every study; rag/glossary.md explains every field.
 - You cannot change code, data or settings. Put proposed code in a markdown code block for Tim to apply.
 - Lead with the answer and the numbers. Short paragraphs or bullets.
-- Use up to ${MAX_STEPS} tool calls, then answer in plain text.`;
+- Use up to ${MAX_STEPS} tool calls, then answer in plain text.
+- Broad questions ("analyze everything", "plan the models"): start from rag/index.json and rag/glossary.md, run 2-4 aggregate queries, then answer. Do not read files one by one.
+- Known corpus findings (5,700+ launches): 72-78% of +50%/+100% pumps peak inside 60 s; simple entry filters at 30 s or 58 s lose 7-14% per trade after costs; model v3 is best at -3.5%; activity/volatility at 30 s pick movers that also crash harder, so exits leak the money.`;
 
 // ---------------- the agent turn (the Durable Object itself is in astras-do.ts) ----------------
 type Msg = ChatMsg;
@@ -202,11 +204,13 @@ export async function agentTurn(env: AgentEnv, history: Msg[], question: string,
     const est = estimateUsd(JSON.stringify(messages).length / CHARS_PER_TOKEN, MAX_OUTPUT);
     if (usd + est > AGENT_CAP_USD) return { answer: null, error: `stopped: the next step would pass the $${AGENT_CAP_USD} cap`, tools, actualUsd: known ? r3(usd) : null, estimatedUsd: r3(usd + est), sources: [...sources], model: model.name };
     let res: ModelResult;
-    try { res = await model.call(messages, MAX_OUTPUT); }
+    const last = step === MAX_STEPS - 1;
+    if (last) messages.push({ role: 'user', content: 'Tool budget used up. Answer now from what you have gathered: findings with numbers, then what to do next. No more tool calls.' });
+    try { res = await model.call(messages, MAX_OUTPUT, !last); }
     catch (e) { return { answer: null, error: `model call failed: ${e instanceof Error ? e.message.slice(0, 300) : 'unknown error'}`, tools, actualUsd: known ? r3(usd) : null, estimatedUsd: r3(usd), sources: [...sources], model: model.name }; }
     if (res.inTok != null && res.outTok != null) usd += estimateUsd(res.inTok, res.outTok); else { known = false; usd += est; }
     const text = res.text;
-    if (!res.toolCalls.length) return text.trim()
+    if (!res.toolCalls.length || last) return text.trim()
       ? { answer: text, error: null, tools, actualUsd: known ? r3(usd) : null, estimatedUsd: r3(usd), sources: [...sources], model: model.name }
       : { answer: null, error: 'the model returned an empty reply', tools, actualUsd: known ? r3(usd) : null, estimatedUsd: r3(usd), sources: [...sources], model: model.name };
     messages.push({ role: 'assistant', content: text || '', tool_calls: res.toolCalls.map(c => c.raw) });
