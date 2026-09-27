@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { safeSelect, safeDocKey, safeCodeRef, runTool, agentTurn, TOOLS, AGENT_CAP_USD } from '../src/astras-agent';
+import { safeSelect, safeDocKey, safeCodeRef, runTool, agentTurn, groqModel, TOOLS, AGENT_CAP_USD } from '../src/astras-agent';
 
 test('query_db guard: one read-only SELECT over the 5 study tables, row cap added', () => {
   assert.equal(safeSelect("SELECT json_extract(data,'$.name') FROM study_tokens WHERE campaign_id='x';"), "SELECT * FROM (SELECT json_extract(data,'$.name') FROM study_tokens WHERE campaign_id='x') LIMIT 200");
@@ -17,7 +17,12 @@ test('red-team audit bypasses are all blocked (F1, F2, F5)', () => {
     'SELECT * FROM study_tokens, secret_tbl', 'SELECT * FROM study_tokens t, secret_tbl s WHERE 1', 'SELECT * FROM study_tokens, pragma_table_list',
     'SELECT * FROM pragma_table_info(\'study_tokens\')', 'SELECT 1 -- x\nFROM secret_tbl', 'WITH c AS (SELECT 1 x UNION ALL SELECT x+1 FROM c) SELECT count(*) FROM c',
     'WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c) SELECT count(*) FROM c', 'SELECT * FROM astra_log', 'SELECT * FROM study_tokens JOIN secret_tbl ON 1',
-    'SELECT * FROM study_tokens LEFT JOIN "secret_tbl" ON 1', 'SELECT (SELECT count(*) FROM secret_tbl) FROM study_tokens'])
+    'SELECT * FROM study_tokens LEFT JOIN "secret_tbl" ON 1', 'SELECT (SELECT count(*) FROM secret_tbl) FROM study_tokens',
+    // re-audit R1: a parenthesis in a FROM list
+    'SELECT * FROM (astra_log)', 'SELECT * FROM sqlite_master, (SELECT 1)', 'SELECT * FROM study_tokens, study_chunks, (SELECT 1)',
+    'SELECT * FROM _cf_KV, (SELECT 1) t', 'SELECT * FROM study_tokens JOIN (study_chunks) ON 1', 'SELECT * FROM (secret_tbl) t',
+    'SELECT * FROM study_tokens, (secret_tbl)', 'SELECT * FROM (SELECT * FROM secret_tbl)', 'SELECT * FROM study_tokens WHERE id IN (SELECT id FROM secret_tbl)',
+    'SELECT * FROM (SELECT count(*) FROM (SELECT data FROM secret_tbl))'])
     assert.throws(() => safeSelect(bad), Error, bad);
   // The exact query the agent wrote in the live end-to-end test still runs.
   assert.ok(safeSelect(`SELECT t.campaign_id, json_extract(t.data, '$.paper.exitReason') AS exit_reason, COUNT(*) AS trades, SUM(json_extract(t.data, '$.paper.pnlUsd')) AS net_pnl_usd
@@ -82,14 +87,27 @@ test('agent loop: calls a tool, feeds the result back, answers; lists tools and 
   assert.equal(r.answer, 'No studies yet.'); assert.deepEqual(r.tools, [{ name: 'read_doc', ok: true, detail: 'rag/index.json' }]); assert.deepEqual(r.sources, ['rag/index.json']);
   assert.equal(seen[0][1].content, 'hi', 'session memory sent'); assert.match(seen[0][0].content, /Astras agent/);
   assert.equal(seen[1].at(-1).role, 'user'); assert.equal(seen[1].at(-1).content, 'TOOL RESULT (read_doc, ok):\n{"studies":[]}');
-  assert.equal(r.actualUsd, 0.03);
+  assert.equal(r.actualUsd, 0.0008, 'gpt-oss-120b on Workers AI'); assert.equal(r.model, '@cf/openai/gpt-oss-120b');
 });
 
 test('agent loop: stops before passing the cost cap and after 6 tool steps', async () => {
-  const huge = [{ role: 'user', content: 'x'.repeat(200000) }];
+  const huge = [{ role: 'user', content: 'x'.repeat(1_000_000) }];
   const capped = await agentTurn(env() as any, huge, 'q');
   assert.equal(capped.answer, null); assert.match(capped.error!, new RegExp(`\\$${AGENT_CAP_USD} cap`));
   const loop = { choices: [{ message: { content: '{"tool":"read_doc","args":{"key":"rag/index.json"}}' } }], usage: { prompt_tokens: 10, completion_tokens: 10 } };
   const r = await agentTurn(env({ AI: { run: async () => loop } }) as any, [], 'q');
   assert.match(r.error!, /after 6 tool steps/); assert.equal(r.tools.length, 6);
+});
+
+test('groq model: gpt-oss-120b at Groq, key only in the Authorization header, priced at Groq rates', async () => {
+  const seen: any[] = [];
+  const fake = (async (url: string, init: any) => { seen.push({ url, init }); return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: 'hi' } }], usage: { prompt_tokens: 10000, completion_tokens: 1000 } }) }; }) as any;
+  const r = await agentTurn(env() as any, [], 'q', groqModel('gsk_test', fake));
+  assert.equal(r.answer, 'hi'); assert.equal(r.model, 'groq/openai/gpt-oss-120b');
+  assert.equal(r.actualUsd, 0.0021, '(10000 x $0.15 + 1000 x $0.60) / 1M');
+  assert.equal(seen[0].url, 'https://api.groq.com/openai/v1/chat/completions');
+  assert.equal(seen[0].init.headers.Authorization, 'Bearer gsk_test'); assert.equal(JSON.parse(seen[0].init.body).model, 'openai/gpt-oss-120b');
+  assert.ok(!JSON.parse(seen[0].init.body).messages.some((m: any) => m.content.includes('gsk_test')), 'key never in the prompt');
+  const failing = (async () => ({ ok: false, status: 401, json: async () => ({ error: { message: 'Invalid API Key' } }) })) as any;
+  assert.match((await agentTurn(env() as any, [], 'q', groqModel('bad', failing))).error!, /Groq 401: Invalid API Key/);
 });

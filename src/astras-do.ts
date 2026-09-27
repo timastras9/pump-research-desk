@@ -1,7 +1,7 @@
 // AstrasAgent Durable Object: one per Ask Astra chat session. Its own SQLite keeps the conversation;
 // the tool loop and every guard live in astras-agent.ts.
 import { DurableObject } from 'cloudflare:workers';
-import { agentTurn, HISTORY_TURNS, type AgentEnv, type AgentReply } from './astras-agent';
+import { agentTurn, groqModel, workersAiModel, HISTORY_TURNS, type AgentEnv, type AgentReply } from './astras-agent';
 
 export class AstrasAgent extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
@@ -14,7 +14,9 @@ export class AstrasAgent extends DurableObject<Env> {
     // Only the bindings the tools use; secrets never reach the agent (audit F4).
     const e = this.env as unknown as AgentEnv;
     const env: AgentEnv = { AI: e.AI, CRYPTO_STUDY: e.CRYPTO_STUDY, CRYPTO_MEDIA: e.CRYPTO_MEDIA, AI_SEARCH: e.AI_SEARCH, AI_SEARCH_INSTANCE: e.AI_SEARCH_INSTANCE };
-    const reply = await agentTurn(env, history, question);
+    // gpt-oss-120b on Groq when GROQ_API_KEY is set (cheapest); same model on Workers AI otherwise. The key goes to the model call only.
+    const key = (this.env as unknown as { GROQ_API_KEY?: string }).GROQ_API_KEY;
+    const reply = await agentTurn(env, history, question, key ? groqModel(key) : workersAiModel(e.AI));
     this.ctx.storage.sql.exec('INSERT INTO turns (at, role, content) VALUES (?,?,?)', Date.now(), 'user', question);
     if (reply.answer) this.ctx.storage.sql.exec('INSERT INTO turns (at, role, content) VALUES (?,?,?)', Date.now(), 'assistant', reply.answer);
     return reply;

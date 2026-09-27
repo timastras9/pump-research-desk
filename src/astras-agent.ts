@@ -1,14 +1,47 @@
 // Astras agent on Cloudflare: one Durable Object per chat session (its own SQLite memory), persona from
-// Open Astras prompts/astras.md, Workers AI model with tools. Zero trust - each tool reaches only what it needs:
+// Open Astras prompts/astras.md, gpt-oss-120b (Groq, or Workers AI without a Groq key) with tools. Zero trust -
+// each tool reaches only what it needs:
 //   search_data     AI Search instance (study export)        read
-//   query_db        D1, 5 study tables, one SELECT, 200 rows  read
+//   query_db        D1, 4 study tables, one SELECT, 200 rows  read
 //   read_doc        R2, keys under rag/ only                 read
 //   read_code       public repo timastras9/pump-research-desk only, no token   read
-// No writes anywhere, no credentials, no network beyond these. Code suggestions go in the answer for Tim to apply.
+// No writes anywhere. The Groq key is used only by the model call, never by a tool. Code suggestions go in the answer.
 import { ASTRAS_PERSONA } from './astras-prompt';
-import { ASTRA_MODEL, estimateUsd } from './astra-review';
 
-export const AGENT_CAP_USD = 0.5;
+export const AGENT_CAP_USD = 0.1;
+
+// ---------------- model (injected, so tools never hold the key) ----------------
+type ChatMsg = { role: string; content: string };
+export type ModelResult = { text: string; inTok: number | null; outTok: number | null };
+export type Model = { name: string; inPerM: number; outPerM: number; call(messages: ChatMsg[], maxOut: number): Promise<ModelResult> };
+const usage = (u: any): Pick<ModelResult, 'inTok' | 'outTok'> => ({ inTok: u?.prompt_tokens ?? u?.input_tokens ?? null, outTok: u?.completion_tokens ?? u?.output_tokens ?? null });
+/** The answer text from any reply shape: Chat Completions, Responses API (output_text / output[].content[].text) or legacy `response`. */
+export function replyText(r: any): string {
+  const c = r?.choices?.[0]?.message?.content;
+  if (typeof c === 'string' && c.trim()) return c;
+  if (Array.isArray(c)) { const t = c.map((p: any) => p?.text ?? '').join(''); if (t.trim()) return t; }
+  if (typeof r?.output_text === 'string' && r.output_text.trim()) return r.output_text;
+  if (Array.isArray(r?.output)) { const t = r.output.filter((o: any) => o?.type === 'message').flatMap((o: any) => o.content ?? []).map((p: any) => p?.text ?? '').join(''); if (t.trim()) return t; }
+  return typeof r?.response === 'string' ? r.response : '';
+}
+/** gpt-oss-120b on Groq (OpenAI-compatible API). List price used for the cap: $0.15 in / $0.60 out per 1M tokens. */
+export function groqModel(key: string, doFetch: typeof fetch = fetch): Model {
+  return { name: 'groq/openai/gpt-oss-120b', inPerM: 0.15, outPerM: 0.6, async call(messages, maxOut) {
+    const r = await doFetch('https://api.groq.com/openai/v1/chat/completions', { method: 'POST',
+      headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: 'openai/gpt-oss-120b', messages, max_completion_tokens: maxOut }) });
+    const j = await r.json() as any;
+    if (!r.ok) throw Error(`Groq ${r.status}: ${j?.error?.message ?? 'request failed'}`);
+    return { text: replyText(j), ...usage(j?.usage) };
+  } };
+}
+/** Same model on Workers AI (fallback when no Groq key): $0.35 in / $0.75 out per 1M tokens. */
+export function workersAiModel(ai: Pick<Ai, 'run'>): Model {
+  return { name: '@cf/openai/gpt-oss-120b', inPerM: 0.35, outPerM: 0.75, async call(messages, maxOut) {
+    const r = await (ai.run as (m: string, i: unknown) => Promise<any>)('@cf/openai/gpt-oss-120b', { messages, max_completion_tokens: maxOut });
+    return { text: replyText(r), ...usage(r?.usage) };
+  } };
+}
 export const MAX_STEPS = 6;
 const MAX_OUTPUT = 4000, HISTORY_TURNS = 30, CHARS_PER_TOKEN = 3;
 
@@ -35,12 +68,29 @@ export function safeSelect(sql: string, maxRows = 200) {
   const ctes = [...bare.matchAll(/(?:\bwith|,)\s+([a-z_][a-z0-9_]*)\s*(?:\([^()]*\))?\s+as\s*\(/gi)];
   const cteNames = new Set(ctes.map(m => m[1].toLowerCase()));
   for (const m of ctes) if (new RegExp(`\\b${m[1]}\\b`, 'i').test(group(bare, m.index! + m[0].length - 1))) throw Error(`CTE "${m[1]}" refers to itself (recursion is not allowed)`);
-  const allowed = (t: string) => DB_TABLES.includes(t) || TABLE_FUNCS.has(t) || cteNames.has(t);
-  const flat = bare.replace(/\b(json_each|json_tree)\s*\([^()]*\)/gi, '$1');   // table functions -> their name
-  for (const m of flat.matchAll(new RegExp(String.raw`\bfrom\s+([^()]*?)${STOP}`, 'gi')))
-    for (const item of m[1].split(',')) { const t = item.trim().split(/\s+/)[0]?.toLowerCase(); if (t && !allowed(t)) throw Error(`table "${t}" is not allowed (allowed: ${DB_TABLES.join(', ')})`); }
-  for (const m of flat.matchAll(/\bjoin\s+([a-z_][a-z0-9_]*)/gi)) if (!allowed(m[1].toLowerCase())) throw Error(`table "${m[1]}" is not allowed (allowed: ${DB_TABLES.join(', ')})`);
-  if (/\bfrom\s+(?![a-z_(])/i.test(flat) || /\bjoin\s+(?![a-z_(])/i.test(flat)) throw Error('unsupported table reference');
+  // Layer 1 (re-audit R1): every other table in this database is refused wherever it appears.
+  const other = bare.match(/\b(study_chunks|astra_log|sqlite_\w+|_cf_\w+|d1_\w+)\b/i);
+  if (other) throw Error(`table "${other[1]}" is not allowed (allowed: ${DB_TABLES.join(', ')})`);
+  // Layer 2: collapse function calls, then check subqueries from the inside out; every FROM list / JOIN is allowlisted.
+  const allowed = (t: string) => DB_TABLES.includes(t) || TABLE_FUNCS.has(t) || cteNames.has(t) || t === '__sub__';
+  const bad = (t: string) => Error(`table "${t}" is not allowed (allowed: ${DB_TABLES.join(', ')})`);
+  let flat = bare, prev = '';
+  const FN = /\b(?!(?:from|join|in|exists|as|on|and|or|not|where|select|union|all|with|values|when|then|else|case|over|filter)\b)([a-z_][a-z0-9_]*)\s*\(([^()]*)\)/gi;
+  while (flat !== prev) { prev = flat; flat = flat.replace(FN, '$1'); }   // f(...) -> f, innermost first
+  const checkFlat = (t: string) => {
+    if (/\b(?:from|join)\s*\(/i.test(t)) throw Error('a parenthesis after FROM/JOIN must start a SELECT subquery');
+    const lists = [...t.matchAll(new RegExp(String.raw`\bfrom\s+([^()]*?)${STOP}`, 'gi'))];
+    if (lists.length !== (t.match(/\bfrom\b/gi) ?? []).length) throw Error('unsupported FROM clause');   // every FROM must be fully parsed
+    for (const m of lists) {
+      if (t.slice(m.index! + m[0].length).trimStart().startsWith('(')) throw Error('unsupported FROM clause');
+      for (const item of m[1].split(',')) { const n = item.trim().split(/\s+/)[0]?.toLowerCase(); if (n && !allowed(n)) throw bad(n); }
+    }
+    for (const m of t.matchAll(/\bjoin\s+([a-z_][a-z0-9_]*)/gi)) if (!allowed(m[1].toLowerCase())) throw bad(m[1]);
+    if (/\bfrom\s+(?![a-z_])/i.test(t) || /\bjoin\s+(?![a-z_])/i.test(t)) throw Error('unsupported table reference');
+  };
+  const SUB = /\(\s*((?:select|with)\b[^()]*)\)/i;
+  for (let m = flat.match(SUB); m; m = flat.match(SUB)) { checkFlat(m[1]); flat = flat.slice(0, m.index!) + ' __sub__ ' + flat.slice(m.index! + m[0].length); }
+  checkFlat(flat);
   return `SELECT * FROM (${s}) LIMIT ${maxRows}`;
 }
 
@@ -144,18 +194,20 @@ type Msg = { role: string; content: string };
 export type AgentReply = { answer: string | null; error: string | null; tools: { name: string; ok: boolean; detail: string }[]; actualUsd: number | null; estimatedUsd: number; sources: string[]; model: string };
 
 /** The tool loop, separate from storage so it can be tested with a fake model. */
-export async function agentTurn(env: AgentEnv, history: Msg[], question: string, doFetch: typeof fetch = fetch): Promise<AgentReply> {
+export async function agentTurn(env: AgentEnv, history: Msg[], question: string, model: Model = workersAiModel(env.AI), doFetch: typeof fetch = fetch): Promise<AgentReply> {
   const messages: Msg[] = [{ role: 'system', content: ASTRAS_PERSONA + '\n' + AGENT_RULES }, ...history, { role: 'user', content: question }];
-  const tools: AgentReply['tools'] = [], sources = new Set<string>();
+  const tools: AgentReply['tools'] = [], sources = new Set<string>(), ASTRA_MODEL = model.name;
+  const estimateUsd = (inTok: number, outTok: number) => (inTok * model.inPerM + outTok * model.outPerM) / 1e6;
   let usd = 0, known = true;
   for (let step = 0; step < MAX_STEPS; step++) {
     const est = estimateUsd(JSON.stringify(messages).length / CHARS_PER_TOKEN, MAX_OUTPUT);
     if (usd + est > AGENT_CAP_USD) return { answer: null, error: `stopped: the next step would pass the $${AGENT_CAP_USD} cap`, tools, actualUsd: known ? r3(usd) : null, estimatedUsd: r3(usd + est), sources: [...sources], model: ASTRA_MODEL };
-    let res: any;
-    try { res = await (env.AI.run as (m: string, i: unknown) => Promise<any>)(ASTRA_MODEL, { messages, max_completion_tokens: MAX_OUTPUT }); }
+    let res: ModelResult;
+    try { res = await model.call(messages, MAX_OUTPUT); }
     catch (e) { return { answer: null, error: `model call failed: ${e instanceof Error ? e.message.slice(0, 300) : 'unknown error'}`, tools, actualUsd: known ? r3(usd) : null, estimatedUsd: r3(usd), sources: [...sources], model: ASTRA_MODEL }; }
-    const u = res?.usage; if (u?.prompt_tokens != null && u?.completion_tokens != null) usd += estimateUsd(u.prompt_tokens, u.completion_tokens); else { known = false; usd += est; }
-    const text: string = res?.choices?.[0]?.message?.content ?? '', call = parseToolCall(text);
+    if (res.inTok != null && res.outTok != null) usd += estimateUsd(res.inTok, res.outTok); else { known = false; usd += est; }
+    const text = res.text, call = parseToolCall(text);
+    if (!call && !text.trim()) return { answer: null, error: 'the model returned an empty reply', tools, actualUsd: known ? r3(usd) : null, estimatedUsd: r3(usd), sources: [...sources], model: ASTRA_MODEL };
     if (!call) return { answer: text, error: null, tools, actualUsd: known ? r3(usd) : null, estimatedUsd: r3(usd), sources: [...sources], model: ASTRA_MODEL };
     const { name, args } = call, r = await runTool(env, name, args, doFetch);
     if (name === 'read_code' && r.ok && args.path) sources.add(`${CODE_REPO}/${args.branch ?? 'main'}/${args.path}`);
@@ -166,5 +218,5 @@ export async function agentTurn(env: AgentEnv, history: Msg[], question: string,
   }
   return { answer: null, error: `stopped after ${MAX_STEPS} tool steps without a final answer`, tools, actualUsd: known ? r3(usd) : null, estimatedUsd: r3(usd), sources: [...sources], model: ASTRA_MODEL };
 }
-const r3 = (x: number) => Math.round(x * 1000) / 1000;
+const r3 = (x: number) => Math.round(x * 10000) / 10000;   // 4 decimals: cheap models cost fractions of a cent
 export { HISTORY_TURNS };

@@ -187,12 +187,12 @@ async function authorized(request: Request, secret: string): Promise<boolean> {
   if (!Number.isFinite(expires) || expires < Date.now() || expires > Date.now() + 86400000) return false;
   return equal(token, await sessionToken(secret, expires));
 }
-async function body(request: Request): Promise<Record<string, unknown>> {
+async function body(request: Request, maxBytes = 8192): Promise<Record<string, unknown>> {
   if (!request.headers.get('content-type')?.startsWith('application/json')) throw new Error('JSON request required.');
   const reader = request.body?.getReader(); if (!reader) throw new Error('Missing request body.');
   let total = 0; const parts: Uint8Array[] = [];
   try { while (true) { const r = await reader.read(); if (r.done) break; total += r.value.length;
-    if (total > 8192) throw new Error('Request too large.'); parts.push(r.value); } } finally { await reader.cancel(); }
+    if (total > maxBytes) throw new Error('Request too large.'); parts.push(r.value); } } finally { await reader.cancel(); }
   const bytes = new Uint8Array(total); let offset = 0; for (const p of parts) { bytes.set(p, offset); offset += p.length; }
   const value: unknown = JSON.parse(new TextDecoder().decode(bytes));
   if (!value || Array.isArray(value) || typeof value !== 'object') throw new Error('Expected a JSON object.');
@@ -247,8 +247,8 @@ async function route(request: Request, env: Env): Promise<Response> {
     }
     // Ask Astra tab: questions over the RAG export; sync re-exports one study from D1 to R2 (rag/).
     if (path === '/api/chat' && request.method === 'POST') {
-      const input = await body(request);
-      if (typeof input.question !== 'string' || !input.question.trim() || input.question.length > 4000) return json({ error: 'Ask a question (up to 4,000 characters).' }, 400);
+      const input = await body(request, 262144);   // chat: 256 KB (the rest of the API keeps 8 KB)
+      if (typeof input.question !== 'string' || !input.question.trim() || input.question.length > 50000) return json({ error: 'Ask a question (up to 50,000 characters).' }, 400);
       // With a session id the Astras agent (Durable Object, tools, memory) answers; without one, the plain RAG answer.
       const session = typeof input.session === 'string' && /^[a-z0-9-]{8,64}$/.test(input.session) ? input.session : null;
       const history = (Array.isArray(input.history) ? input.history : []).filter((t): t is ChatTurn => !!t && (t.role === 'user' || t.role === 'assistant') && typeof t.content === 'string');
@@ -322,7 +322,8 @@ export default {
     try { response = await route(request, env); }
     catch (error) {
       console.error(JSON.stringify({ message: 'request_failed', error: error instanceof Error ? error.message : 'Unknown' }));
-      response = json({ error: 'Request failed. Check your input and try again.' }, 400);
+      response = error instanceof Error && error.message === 'Request too large.' ? json({ error: 'Request too large. Shorten the question.' }, 413)
+        : json({ error: 'Request failed. Check your input and try again.' }, 400);
     }
     const headers = new Headers(response.headers);
     headers.set('Cache-Control', 'no-store');

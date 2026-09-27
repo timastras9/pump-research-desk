@@ -25,8 +25,9 @@ if(typeof document!=='undefined'){
  let studies=[];
  async function status(){const d=await api('/api/rag/studies');studies=d.studies||[];$('rag-status').textContent=ragStatusText(d);}
  async function ask(q){if(busy||!q.trim())return;busy=true;$('ask').disabled=true;$('ask').textContent='Astra is reading…';
-  const past=history.filter(t=>t.content).map(t=>({role:t.role,content:t.content}));history.push({role:'user',content:q});render();
-  try{const r=await api('/api/chat',{question:q,history:past,session});history.push({role:'assistant',content:r.answer,...r});}
+  history.push({role:'user',content:q});render();
+  try{const r=await api('/api/chat',{question:q,session});   // the agent keeps the conversation server-side; sending history overflowed the 8 KB request limit
+  history.push({role:'assistant',content:r.answer,...r});}
   catch(e){history.push({role:'assistant',content:'',error:e.message});}
   finally{busy=false;$('ask').disabled=false;$('ask').textContent='Ask Astra';render();}}
  $('ask-form').onsubmit=e=>{e.preventDefault();const q=$('question').value;$('question').value='';ask(q);};
