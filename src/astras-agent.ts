@@ -46,7 +46,7 @@ export function fireworksModel(key: string, doFetch: typeof fetch = fetch): Mode
   return { name: 'fireworks/deepseek-v4-pro', inPerM: 2, outPerM: 8, capUsd: 2, async call(messages, maxOut, useTools = true) {
     const r = await doFetch('https://api.fireworks.ai/inference/v1/chat/completions', { method: 'POST',
       headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify({ model: FIREWORKS_MODEL, messages, ...(useTools ? { tools: TOOLS } : {}), max_tokens: maxOut }) });
+      body: JSON.stringify({ model: FIREWORKS_MODEL, messages, ...(useTools ? { tools: TOOLS } : {}), max_tokens: maxOut, reasoning_effort: 'none' }) });   // Tim: thinking off (speed)
     const j = await r.json() as any;
     if (!r.ok) throw Error(`Fireworks ${r.status}: ${j?.error?.message ?? j?.message ?? 'request failed'}`);
     return { text: replyText(j), toolCalls: toolCalls(j), ...usage(j?.usage) };
