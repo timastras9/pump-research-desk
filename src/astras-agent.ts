@@ -70,15 +70,15 @@ export async function runTool(env: AgentEnv, name: string, args: any, doFetch: t
     if (name === 'search_data') {
       if (!env.AI_SEARCH || !env.AI_SEARCH_INSTANCE) return { ok: false, out: 'document search is not connected' };
       const r = await env.AI_SEARCH.get(env.AI_SEARCH_INSTANCE).search({ messages: [{ role: 'user', content: String(args?.query ?? '') }], ai_search_options: { retrieval: { max_num_results: 8 } } });
-      return { ok: true, out: (r.chunks ?? []).map(c => `--- ${c.item?.key} (score ${(c.score ?? 0).toFixed(2)})\n${clip(String(c.text ?? ''), 3000)}`).join('\n') || 'no matches' };
+      return { ok: true, out: (r.chunks ?? []).map(c => `--- ${c.item?.key} (score ${(c.score ?? 0).toFixed(2)})\n${clip(String(c.text ?? ''), 1500)}`).join('\n') || 'no matches' };
     }
     if (name === 'query_db') {
       const rows = (await env.CRYPTO_STUDY.prepare(safeSelect(String(args?.sql ?? ''))).all()).results;
-      return { ok: true, out: clip(JSON.stringify(rows), 30000) };
+      return { ok: true, out: clip(JSON.stringify(rows), 6000) };
     }
     if (name === 'read_doc') {
       const o = await env.CRYPTO_MEDIA.get(safeDocKey(args?.key));
-      return o ? { ok: true, out: clip(await o.text(), 60000) } : { ok: false, out: 'document not found' };
+      return o ? { ok: true, out: clip(await o.text(), 15000) } : { ok: false, out: 'document not found' };
     }
     if (name === 'read_code') {
       const { branch, path } = safeCodeRef(args?.branch, args?.path), headers = { 'User-Agent': 'astras-agent' };
@@ -89,7 +89,7 @@ export async function runTool(env: AgentEnv, name: string, args: any, doFetch: t
         return { ok: true, out: clip(tree.filter(f => f.type === 'blob' && !/(^|\/)node_modules\//.test(f.path)).map(f => `${f.path} (${f.size ?? 0} B)`).join('\n'), 30000) };
       }
       const r = await doFetch(`https://raw.githubusercontent.com/${CODE_REPO}/${branch.split('/').map(encodeURIComponent).join('/')}/${path.split('/').map(encodeURIComponent).join('/')}`, { headers });
-      return r.ok ? { ok: true, out: clip(await r.text(), 60000) } : { ok: false, out: `GitHub ${r.status}: ${path} not found on ${branch}` };
+      return r.ok ? { ok: true, out: clip(await r.text(), 15000) } : { ok: false, out: `GitHub ${r.status}: ${path} not found on ${branch}` };
     }
     return { ok: false, out: `unknown tool ${name}` };
   } catch (e) { return { ok: false, out: e instanceof Error ? e.message.slice(0, 500) : 'tool failed' }; }
@@ -99,12 +99,29 @@ export const AGENT_RULES = `
 ## How you work here (Cloudflare, Ask Astra)
 Tools (all read-only): search_data (study export), query_db (one SELECT), read_doc (rag/ files), read_code (the project's public repo).
 - Compute numbers with query_db instead of guessing; show the SQL you used for any number that matters.
+- In SQL select only the fields you need with json_extract(data,'$.field') and aggregate (COUNT, SUM, AVG, GROUP BY). Never SELECT the whole data column: it is huge and each result is cut at 6,000 characters.
+- Paper trade fields per token: $.paper.exitReason, $.paper.pnlPct, $.paper.pnlUsd, $.paper.status; study id is campaign_id; newest study = MAX(started_at).
 - rag/index.json lists every study; rag/glossary.md explains every field.
 - You cannot change code, data or settings. Put proposed code in a markdown code block for Tim to apply.
-- Lead with the answer and the numbers. Short paragraphs or bullets.`;
+- Lead with the answer and the numbers. Short paragraphs or bullets.
+
+## Calling a tool
+To use a tool, reply with ONLY one line of JSON and nothing else:
+{"tool":"<name>","args":{...}}
+${TOOLS.map(t => `- ${t.function.name}: ${t.function.description} Args: ${JSON.stringify(t.function.parameters.properties)}`).join('\n')}
+The result comes back in the next message as TOOL RESULT. Use as many tools as you need (up to ${MAX_STEPS}), then give your final answer as normal text (no JSON line).`;
+
+/** A tool request from the model: one JSON line {"tool": name, "args": {...}}, else null (a final answer). */
+export function parseToolCall(text: string): { name: string; args: any } | null {
+  const t = String(text ?? '').trim().replace(/^```(?:json)?\s*|\s*```$/g, '');
+  if (!t.startsWith('{') || !t.endsWith('}')) return null;
+  try { const j = JSON.parse(t); return typeof j?.tool === 'string' ? { name: j.tool, args: j.args ?? {} } : null; } catch { return null; }
+}
 
 // ---------------- the agent turn (the Durable Object itself is in astras-do.ts) ----------------
-type Msg = { role: string; content: string | null; tool_calls?: any[]; tool_call_id?: string };
+// Tools are called through plain chat messages (the JSON line above): the model's native `tools`
+// parameter was rejected by Workers AI (7003 User Input Error), plain messages work.
+type Msg = { role: string; content: string };
 export type AgentReply = { answer: string | null; error: string | null; tools: { name: string; ok: boolean; detail: string }[]; actualUsd: number | null; estimatedUsd: number; sources: string[]; model: string };
 
 /** The tool loop, separate from storage so it can be tested with a fake model. */
@@ -115,20 +132,18 @@ export async function agentTurn(env: AgentEnv, history: Msg[], question: string,
   for (let step = 0; step < MAX_STEPS; step++) {
     const est = estimateUsd(JSON.stringify(messages).length / CHARS_PER_TOKEN, MAX_OUTPUT);
     if (usd + est > AGENT_CAP_USD) return { answer: null, error: `stopped: the next step would pass the $${AGENT_CAP_USD} cap`, tools, actualUsd: known ? r3(usd) : null, estimatedUsd: r3(usd + est), sources: [...sources], model: ASTRA_MODEL };
-    const res = await (env.AI.run as (m: string, i: unknown) => Promise<any>)(ASTRA_MODEL, { messages, tools: TOOLS, max_completion_tokens: MAX_OUTPUT });
+    let res: any;
+    try { res = await (env.AI.run as (m: string, i: unknown) => Promise<any>)(ASTRA_MODEL, { messages, max_completion_tokens: MAX_OUTPUT }); }
+    catch (e) { return { answer: null, error: `model call failed: ${e instanceof Error ? e.message.slice(0, 300) : 'unknown error'}`, tools, actualUsd: known ? r3(usd) : null, estimatedUsd: r3(usd), sources: [...sources], model: ASTRA_MODEL }; }
     const u = res?.usage; if (u?.prompt_tokens != null && u?.completion_tokens != null) usd += estimateUsd(u.prompt_tokens, u.completion_tokens); else { known = false; usd += est; }
-    const msg = res?.choices?.[0]?.message ?? {}, calls = msg.tool_calls ?? [];
-    if (!calls.length) return { answer: msg.content ?? '', error: null, tools, actualUsd: known ? r3(usd) : null, estimatedUsd: r3(usd), sources: [...sources], model: ASTRA_MODEL };
-    messages.push({ role: 'assistant', content: msg.content ?? null, tool_calls: calls });
-    for (const c of calls) {
-      let args: any = {}; try { args = JSON.parse(c.function?.arguments || '{}'); } catch { /* bad JSON -> tool reports the error */ }
-      const r = await runTool(env, c.function?.name, args, doFetch);
-      if (c.function?.name === 'read_code' && r.ok && args.path) sources.add(`${CODE_REPO}/${args.branch ?? 'main'}/${args.path}`);
-      if (c.function?.name === 'read_doc' && r.ok) sources.add(String(args.key));
-      if (c.function?.name === 'search_data' && r.ok) for (const m of r.out.matchAll(/^--- (\S+)/gm)) sources.add(m[1]);
-      tools.push({ name: c.function?.name, ok: r.ok, detail: c.function?.name === 'query_db' ? String(args.sql ?? '').slice(0, 300) : String(args.query ?? args.key ?? (args.path ? `${args.branch ?? 'main'}:${args.path}` : `list ${args.branch ?? 'main'}`)).slice(0, 200) });
-      messages.push({ role: 'tool', tool_call_id: c.id, content: r.out });
-    }
+    const text: string = res?.choices?.[0]?.message?.content ?? '', call = parseToolCall(text);
+    if (!call) return { answer: text, error: null, tools, actualUsd: known ? r3(usd) : null, estimatedUsd: r3(usd), sources: [...sources], model: ASTRA_MODEL };
+    const { name, args } = call, r = await runTool(env, name, args, doFetch);
+    if (name === 'read_code' && r.ok && args.path) sources.add(`${CODE_REPO}/${args.branch ?? 'main'}/${args.path}`);
+    if (name === 'read_doc' && r.ok) sources.add(String(args.key));
+    if (name === 'search_data' && r.ok) for (const m of r.out.matchAll(/^--- (\S+)/gm)) sources.add(m[1]);
+    tools.push({ name, ok: r.ok, detail: name === 'query_db' ? String(args.sql ?? '').slice(0, 300) : String(args.query ?? args.key ?? (args.path ? `${args.branch ?? 'main'}:${args.path}` : `list ${args.branch ?? 'main'}`)).slice(0, 200) });
+    messages.push({ role: 'assistant', content: text }, { role: 'user', content: `TOOL RESULT (${name}, ${r.ok ? 'ok' : 'error'}):\n${r.out}` });
   }
   return { answer: null, error: `stopped after ${MAX_STEPS} tool steps without a final answer`, tools, actualUsd: known ? r3(usd) : null, estimatedUsd: r3(usd), sources: [...sources], model: ASTRA_MODEL };
 }

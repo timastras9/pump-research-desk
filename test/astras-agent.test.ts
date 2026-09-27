@@ -54,14 +54,14 @@ test('tools: DB runs only the guarded SQL; blocked SQL never reaches D1; docs li
 test('agent loop: calls a tool, feeds the result back, answers; lists tools and sources', async () => {
   const seen: any[] = [];
   const replies = [
-    { choices: [{ message: { content: null, tool_calls: [{ id: 'c1', function: { name: 'read_doc', arguments: '{"key":"rag/index.json"}' } }] } }], usage: { prompt_tokens: 1000, completion_tokens: 50 } },
+    { choices: [{ message: { content: '{"tool":"read_doc","args":{"key":"rag/index.json"}}' } }], usage: { prompt_tokens: 1000, completion_tokens: 50 } },
     { choices: [{ message: { content: 'No studies yet.' } }], usage: { prompt_tokens: 1200, completion_tokens: 20 } },
   ];
   const e = env({ AI: { run: async (_m: string, i: any) => { seen.push(JSON.parse(JSON.stringify(i.messages))); return replies.shift(); } } });
   const r = await agentTurn(e as any, [{ role: 'user', content: 'hi' }, { role: 'assistant', content: 'hello' }], 'How many studies?');
   assert.equal(r.answer, 'No studies yet.'); assert.deepEqual(r.tools, [{ name: 'read_doc', ok: true, detail: 'rag/index.json' }]); assert.deepEqual(r.sources, ['rag/index.json']);
   assert.equal(seen[0][1].content, 'hi', 'session memory sent'); assert.match(seen[0][0].content, /Astras agent/);
-  assert.equal(seen[1].at(-1).role, 'tool'); assert.equal(seen[1].at(-1).content, '{"studies":[]}');
+  assert.equal(seen[1].at(-1).role, 'user'); assert.equal(seen[1].at(-1).content, 'TOOL RESULT (read_doc, ok):\n{"studies":[]}');
   assert.equal(r.actualUsd, 0.03);
 });
 
@@ -69,7 +69,7 @@ test('agent loop: stops before passing the cost cap and after 6 tool steps', asy
   const huge = [{ role: 'user', content: 'x'.repeat(200000) }];
   const capped = await agentTurn(env() as any, huge, 'q');
   assert.equal(capped.answer, null); assert.match(capped.error!, new RegExp(`\\$${AGENT_CAP_USD} cap`));
-  const loop = { choices: [{ message: { tool_calls: [{ id: 'c', function: { name: 'read_doc', arguments: '{"key":"rag/index.json"}' } }] } }], usage: { prompt_tokens: 10, completion_tokens: 10 } };
+  const loop = { choices: [{ message: { content: '{"tool":"read_doc","args":{"key":"rag/index.json"}}' } }], usage: { prompt_tokens: 10, completion_tokens: 10 } };
   const r = await agentTurn(env({ AI: { run: async () => loop } }) as any, [], 'q');
   assert.match(r.error!, /after 6 tool steps/); assert.equal(r.tools.length, 6);
 });
