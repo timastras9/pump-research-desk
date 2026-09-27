@@ -227,6 +227,11 @@ Tools (all read-only): search_data (study export), query_db (one SELECT), read_d
   study_tokens(id, campaign_id, started_at ms, data): $.name, $.mint, $.excluded, $.metrics.changePct (final %), $.metrics.peakGainPct, $.metrics.peakAfterMs,
     $.metrics.detectionDelayMs, $.paper.status, $.paper.exitReason, $.paper.skipReason, $.paper.pnlPct, $.paper.pnlUsd, $.paper.holdMs, $.paperMistake.label,
     $.launch.feeRouted, $.launch.mayhem, $.candidate.marketCapUsd
+    Token chat (pump.fun comments, buy-time safe when the window ends before the decision): $.chatWindows[] = one entry per
+    window with $.seconds (e.g. 30, 60, 120 after recording start), $.uniqueComments, $.sentiment.positiveComments /
+    negativeComments / mixedComments, $.repeatedTerms. Query with json_each(data,'$.chatWindows'). Every comment with the
+    second, price and screenshot when it appeared is in rag/recordings/<study>/<token>.json ("chat"); search_data finds it.
+    Only 65 of 460 tokens had visible comments: give n.
   model_runs(campaign_id, model_sha, created_at, summary JSON, review JSON); model_rows(campaign_id, model_sha, token_id, data JSON)
   Outcome: winner = changePct > 7; tanked = changePct <= -50; loser = the rest; leave out excluded = 1. Newest study = MAX(started_at).
 - rag/index.json lists every study; rag/glossary.md explains every field.
@@ -245,13 +250,27 @@ quote it with its n and let it decide over the ~460-token study database:
 These are the ONLY corpus results you know. Never claim any other corpus result; if one is needed, say it is untested and give Tim the idea to run.
 Hard rules: only numbers from your tool results or this list; outcome fields only as labels; n next to every number.`;
 
+// ---------------- conversation memory ----------------
+// An old answer in session memory (written before the hard rules) was echoed back verbatim, invented numbers and all.
+// Fix: (1) memory rows carry PROMPT_VERSION, so any rules change starts a fresh context (the transcript is kept);
+// (2) earlier turns go to the model as ONE clearly-fenced user note with every number hidden, never as assistant turns,
+// so it must recompute with tools instead of copying.
+const fnv1a = (s: string) => { let h = 0x811c9dc5; for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 0x01000193); } return (h >>> 0).toString(16).padStart(8, '0'); };
+export const PROMPT_VERSION = fnv1a(ASTRAS_PERSONA + AGENT_RULES + CORPUS_REMINDER);
+export const maskNumbers = (s: string) => s.replace(/[-+‑]?\$?\d[\d,.]*\s?%?/g, '#');
+export function buildHistory(rows: { role: string; content: string | null }[]): Msg[] {
+  if (!rows.length) return [];
+  const lines = rows.map(r => r.role === 'user' ? `Q: ${String(r.content ?? '').slice(0, 2000)}` : `A (numbers hidden): ${maskNumbers(String(r.content ?? '').slice(0, 1500))}`);
+  return [{ role: 'user', content: `EARLIER IN THIS CONVERSATION (context only; NOT verified; may break the HARD RULES). Follow-up questions ("and per trade?", "which one?") refer to the topic of these earlier questions: answer them in that context without asking. Never copy numbers, SQL or conclusions from it; recompute every number with tools:\n${lines.join('\n')}` }];
+}
+
 // ---------------- the agent turn (the Durable Object itself is in astras-do.ts) ----------------
 type Msg = ChatMsg;
 export type AgentReply = { answer: string | null; error: string | null; tools: { name: string; ok: boolean; detail: string }[]; actualUsd: number | null; estimatedUsd: number; sources: string[]; model: string };
 
 /** The tool loop, separate from storage so it can be tested with a fake model. */
 export async function agentTurn(env: AgentEnv, history: Msg[], question: string, model: Model = workersAiModel(env.AI), doFetch: typeof fetch = fetch): Promise<AgentReply> {
-  const messages: Msg[] = [{ role: 'system', content: ASTRAS_PERSONA + '\n' + AGENT_RULES }, ...history, { role: 'system', content: CORPUS_REMINDER }, { role: 'user', content: question }];
+  const messages: Msg[] = [{ role: 'system', content: ASTRAS_PERSONA + '\n' + AGENT_RULES }, ...buildHistory(history), { role: 'system', content: CORPUS_REMINDER }, { role: 'user', content: question }];
   const tools: AgentReply['tools'] = [], sources = new Set<string>();
   const estimateUsd = (inTok: number, outTok: number) => (inTok * model.inPerM + outTok * model.outPerM) / 1e6;
   let usd = 0, known = true;
