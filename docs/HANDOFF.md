@@ -53,6 +53,8 @@ Read this first in a new session. Then check `~/.claude/projects/-Users-tim-Docu
 | Final numbers panel at the top of each study (next step 3, built) | a32bab0 |
 | RAG export D1 → R2 `rag/` after every study + model run; Ask Astra tab (`/chat.html`, `/api/chat`); AI Search namespace binding, instance name in `AI_SEARCH_INSTANCE` | see git log |
 
+**AI Search instance `crypto-study-media`** (namespace default): R2 source `crypto-study-media`, include `rag/**` only (never the whole bucket: ~50k screenshots), hybrid search on. 923/927 files indexed 2026-09-27. Sync jobs stop after ~100-300 files and have a cooldown; `wrangler ai-search jobs create crypto-study-media` restarts one. Recording docs (`rag/recordings/`) hold every frame's price (1 row/s), key moments tied to screenshots, vision notes and the token chat.
+
 **RAG export already in R2 (no deploy needed):** `npx tsx scripts/rag-dump.ts` dumped all 5 studies / 460 tokens (467 files) to `crypto-study-media/rag/` on 2026-09-26. Re-run it any time; it overwrites only `rag/`.
 
 UI changes in that batch: frame status line gains "Paper: open +x%"; Watching-now cards gain one paper line; study notes gain "skipped as copycat names: N"; Model tab gains a "Seen" column. Nothing removed.
