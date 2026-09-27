@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { safeSelect, safeDocKey, safeCodeRef, runTool, agentTurn, groqModel, workersAiModel, withFallback, TOOLS, AGENT_CAP_USD } from '../src/astras-agent';
+import { safeSelect, safeDocKey, safeCodeRef, runTool, agentTurn, groqModel, workersAiModel, withFallback, astraModel, TOOLS, AGENT_CAP_USD } from '../src/astras-agent';
 
 test('query_db guard: one read-only SELECT over the 5 study tables, row cap added', () => {
   assert.equal(safeSelect("SELECT json_extract(data,'$.name') FROM study_tokens WHERE campaign_id='x';"), "SELECT * FROM (SELECT json_extract(data,'$.name') FROM study_tokens WHERE campaign_id='x') LIMIT 200");
@@ -97,6 +97,23 @@ test('agent loop: stops before passing the cost cap and after 6 tool steps', asy
   const loop = { choices: [{ message: { content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'read_doc', arguments: '{"key":"rag/index.json"}' } }] } }], usage: { prompt_tokens: 10, completion_tokens: 10 } };
   const r = await agentTurn(env({ AI: { run: async () => loop } }) as any, [], 'q');
   assert.match(r.error!, /empty reply/); assert.equal(r.tools.length, 11, 'last step has tools off');
+});
+
+test('astra adapter: no native tools param, tool calls as JSON lines, results fed back as messages, $0.50 cap', async () => {
+  const sent: any[] = [];
+  const replies = [{ choices: [{ message: { content: '{"tool":"read_doc","args":{"key":"rag/index.json"}}' } }], usage: { prompt_tokens: 1000, completion_tokens: 20 } },
+    { choices: [{ message: { content: 'There are no studies yet.' } }], usage: { prompt_tokens: 1100, completion_tokens: 10 } }];
+  const ai = { run: async (m: string, i: any) => { sent.push({ m, i: JSON.parse(JSON.stringify(i)) }); return replies.shift(); } };
+  const r = await agentTurn(env({ AI: ai }) as any, [], 'How many studies?', astraModel(ai as any));
+  assert.equal(r.answer, 'There are no studies yet.'); assert.equal(r.model, 'openai/gpt-6-astra');
+  assert.deepEqual(r.tools, [{ name: 'read_doc', ok: true, detail: 'rag/index.json' }]);
+  assert.ok(sent.every(s => s.m === 'openai/gpt-6-astra' && !('tools' in s.i)), 'never the native tools param');
+  assert.match(sent[0].i.messages[1].content, /Calling a tool/);
+  const second = sent[1].i.messages;
+  assert.equal(second.at(-2).content, '{"tool":"read_doc","args":{"key":"rag/index.json"}}');
+  assert.equal(second.at(-1).role, 'user'); assert.equal(second.at(-1).content, 'TOOL RESULT:\n{"studies":[]}');
+  assert.equal(r.actualUsd, 0.0267, '(2100 in x $12 + 30 out x $50) / 1M');
+  assert.equal(astraModel(ai as any).capUsd, 2);
 });
 
 test('fallback: a failing Groq call moves the step to Workers AI and reports that model', async () => {

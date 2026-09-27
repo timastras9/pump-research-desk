@@ -8,7 +8,7 @@
 // No writes anywhere. The Groq key is used only by the model call, never by a tool. Code suggestions go in the answer.
 import { ASTRAS_PERSONA } from './astras-prompt';
 
-export const AGENT_CAP_USD = 0.1;
+export const AGENT_CAP_USD = 2;   // Tim: cost is not the concern
 
 // ---------------- model (injected, so tools never hold the key) ----------------
 // gpt-oss uses NATIVE tool calling (verified against the real model): with tools described only in text it
@@ -16,7 +16,7 @@ export const AGENT_CAP_USD = 0.1;
 type ChatMsg = { role: string; content: string | null; tool_calls?: any[]; tool_call_id?: string };
 export type ToolCall = { id: string; name: string; arguments: string; raw: any };
 export type ModelResult = { text: string; toolCalls: ToolCall[]; inTok: number | null; outTok: number | null };
-export type Model = { name: string; inPerM: number; outPerM: number; call(messages: ChatMsg[], maxOut: number, useTools?: boolean): Promise<ModelResult> };
+export type Model = { name: string; inPerM: number; outPerM: number; capUsd?: number; call(messages: ChatMsg[], maxOut: number, useTools?: boolean): Promise<ModelResult> };
 const toolCalls = (r: any): ToolCall[] => (r?.choices?.[0]?.message?.tool_calls ?? []).map((c: any) => ({ id: c.id, name: c.function?.name, arguments: c.function?.arguments ?? '{}', raw: c }));
 const usage = (u: any): Pick<ModelResult, 'inTok' | 'outTok'> => ({ inTok: u?.prompt_tokens ?? u?.input_tokens ?? null, outTok: u?.completion_tokens ?? u?.output_tokens ?? null });
 /** The answer text from any reply shape: Chat Completions, Responses API (output_text / output[].content[].text) or legacy `response`. */
@@ -46,12 +46,39 @@ export function workersAiModel(ai: Pick<Ai, 'run'>): Model {
     return { text: replyText(r), toolCalls: toolCalls(r), ...usage(r?.usage) };
   } };
 }
-/** Groq first; if a Groq call fails, the same step runs on Workers AI (verified end to end), priced at its rates. */
+/** Tim's model: openai/gpt-6-astra on Workers AI. It rejects the native `tools` parameter (7003) but handles tools as
+ *  plain chat (verified end to end), so this adapter converts: tool calls <-> one JSON line; tool results -> a user
+ *  message. List price used for the cap: $12 in (cache-write rate, never below the bill) / $50 out per 1M tokens. */
+export const ASTRA_TOOL_PROTOCOL = () => `## Calling a tool
+To use a tool, reply with ONLY one line of JSON and nothing else: {"tool":"<name>","args":{...}}
+${TOOLS.map(t => `- ${t.function.name}: ${t.function.description} Args: ${JSON.stringify(t.function.parameters.properties)}`).join('\n')}
+The result comes back as a message starting with TOOL RESULT. When you have what you need, answer in normal text (no JSON line).`;
+/** A tool request written as one JSON line {"tool": name, "args": {...}}, else null. */
+export function parseToolCall(text: string): { name: string; args: any } | null {
+  const t = String(text ?? '').trim().replace(/^```(?:json)?\s*|\s*```$/g, '');
+  if (!t.startsWith('{') || !t.endsWith('}')) return null;
+  try { const j = JSON.parse(t); return typeof j?.tool === 'string' ? { name: j.tool, args: j.args ?? {} } : null; } catch { return null; }
+}
+export function astraModel(ai: Pick<Ai, 'run'>): Model {
+  let n = 0;
+  return { name: 'openai/gpt-6-astra', inPerM: 12, outPerM: 50, capUsd: 2, async call(messages, maxOut, useTools = true) {
+    const plain: ChatMsg[] = messages.map(m => m.role === 'tool' ? { role: 'user', content: `TOOL RESULT:\n${m.content ?? ''}` }
+      : m.tool_calls?.length ? { role: 'assistant', content: m.tool_calls.map((c: any) => JSON.stringify({ tool: c.function?.name, args: JSON.parse(c.function?.arguments || '{}') })).join('\n') }
+      : { role: m.role, content: m.content ?? '' });
+    if (useTools) plain.splice(1, 0, { role: 'system', content: ASTRA_TOOL_PROTOCOL() });
+    const r = await (ai.run as (m: string, i: unknown) => Promise<any>)('openai/gpt-6-astra', { messages: plain, max_completion_tokens: maxOut });
+    const text = replyText(r), call = useTools ? parseToolCall(text) : null;
+    if (!call) return { text, toolCalls: [], ...usage(r?.usage) };
+    const id = `astra-${++n}`, args = JSON.stringify(call.args);
+    return { text: '', toolCalls: [{ id, name: call.name, arguments: args, raw: { id, type: 'function', function: { name: call.name, arguments: args } } }], ...usage(r?.usage) };
+  } };
+}
+/** Primary first; if a primary call fails, the same step runs on the backup, priced at its rates. */
 export function withFallback(primary: Model, backup: Model): Model {
   let active = primary;
-  return { get name() { return active.name; }, get inPerM() { return active.inPerM; }, get outPerM() { return active.outPerM; },
+  return { get name() { return active.name; }, get inPerM() { return active.inPerM; }, get outPerM() { return active.outPerM; }, get capUsd() { return active.capUsd; },
     async call(messages, maxOut, useTools = true) {
-      if (active === primary) { try { return await primary.call(messages, maxOut, useTools); } catch { active = backup; } }
+      if (active === primary) { try { return await primary.call(messages, maxOut, useTools); } catch (e) { console.error(JSON.stringify({ message: "model_fallback", from: primary.name, to: backup.name, error: e instanceof Error ? e.message.slice(0, 500) : String(e) })); active = backup; } }
       return backup.call(messages, maxOut, useTools);
     } } as Model;
 }
@@ -230,7 +257,8 @@ export async function agentTurn(env: AgentEnv, history: Msg[], question: string,
   let usd = 0, known = true;
   for (let step = 0; step < MAX_STEPS; step++) {
     const est = estimateUsd(JSON.stringify(messages).length / CHARS_PER_TOKEN, MAX_OUTPUT);
-    if (usd + est > AGENT_CAP_USD) return { answer: null, error: `stopped: the next step would pass the $${AGENT_CAP_USD} cap`, tools, actualUsd: known ? r3(usd) : null, estimatedUsd: r3(usd + est), sources: [...sources], model: model.name };
+    const cap = model.capUsd ?? AGENT_CAP_USD;
+    if (usd + est > cap) return { answer: null, error: `stopped: the next step would pass the $${cap} cap`, tools, actualUsd: known ? r3(usd) : null, estimatedUsd: r3(usd + est), sources: [...sources], model: model.name };
     let res: ModelResult;
     const last = step === MAX_STEPS - 1;
     if (last) messages.push({ role: 'user', content: 'Tool budget used up. Answer now from what you have gathered: findings with numbers, then what to do next. No more tool calls.' });
