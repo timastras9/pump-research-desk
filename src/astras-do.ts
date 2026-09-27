@@ -1,7 +1,7 @@
 // AstrasAgent Durable Object: one per Ask Astra chat session. Its own SQLite keeps the conversation;
 // the tool loop and every guard live in astras-agent.ts.
 import { DurableObject } from 'cloudflare:workers';
-import { validPrices, dsPrompt, askDeepSeek, resolveDeepSeekModel, scoreToken, btSummary, type BtRow } from './deepseek-bt';
+import { validPrices, dsPrompt, askDeepSeek, askDeepSeekPlan, planSystem, lookupText, situationText, resolveDeepSeekModel, scoreToken, btSummary, type BtRow } from './deepseek-bt';
 import { agentTurn, astraModel, fireworksModel, groqModel, workersAiModel, withFallback, HISTORY_TURNS, PROMPT_VERSION, type AgentEnv, type AgentReply } from './astras-agent';
 
 export class AstrasAgent extends DurableObject<Env> {
@@ -39,12 +39,14 @@ export class AstrasAgent extends DurableObject<Env> {
     let model: string;
     try { model = await resolveDeepSeekModel(key); } catch (e) { return { error: e instanceof Error ? e.message : 'could not list Fireworks models' }; }
     const run = new Date().toISOString();
-    await this.ctx.storage.put('bt', { run, model, queue: ids, total: ids.length, done: 0, fails: 0, errors: [] as string[], startedAt: Date.now() });
+    const lk = await (this.env as unknown as AgentEnv).CRYPTO_MEDIA.get('rag/exit-lookup.json');
+    const system = planSystem(lookupText(lk ? await lk.json() : null));
+    await this.ctx.storage.put('bt', { run, model, system, queue: ids, total: ids.length, done: 0, fails: 0, errors: [] as string[], startedAt: Date.now() });
     await this.ctx.storage.setAlarm(Date.now() + 100);
     return { run, model, total: ids.length };
   }
   async alarm() {
-    const bt = await this.ctx.storage.get<{ run: string; model?: string; queue: string[]; total: number; done: number; fails?: number; errors: string[]; startedAt: number; finishedAt?: number }>('bt');
+    const bt = await this.ctx.storage.get<{ run: string; model?: string; system?: string; queue: string[]; total: number; done: number; fails?: number; errors: string[]; startedAt: number; finishedAt?: number }>('bt');
     const key = (this.env as unknown as { FIREWORKS_API_KEY?: string }).FIREWORKS_API_KEY;
     if (!bt || !bt.queue.length) return;
     if (!key) { bt.errors.push('FIREWORKS_API_KEY is not set'); bt.queue = []; await this.ctx.storage.put('bt', bt); return; }
@@ -54,9 +56,10 @@ export class AstrasAgent extends DurableObject<Env> {
         const t = await db.prepare("SELECT campaign_id, json_extract(data,'$.name') AS name, json_extract(data,'$.startedAt') AS startedAt, json_extract(data,'$.launch') AS launch, json_extract(data,'$.candidate.marketCapUsd') AS cap, json_extract(data,'$.metrics.changePct') AS finalPct FROM study_tokens WHERE id=?").bind(id).first<any>();
         const chunks = (await db.prepare("SELECT json_extract(data,'$.samples') AS s FROM study_chunks WHERE token_id=?").bind(id).all<{ s: string | null }>()).results;
         const v = validPrices(chunks.flatMap(c => (c.s ? JSON.parse(c.s) : []) as any[]).map(x => ({ time: x.priceReadAt ?? x.capturedAt, priceUsd: x.priceUsd })));
-        const prompt = t ? dsPrompt(v, t.startedAt, t.launch ? JSON.parse(t.launch) : null, t.cap) : null;
+        const base = t ? dsPrompt(v, t.startedAt, t.launch ? JSON.parse(t.launch) : null, t.cap) : null, sit = t ? situationText(v, t.startedAt) : null;
+        const prompt = base && sit ? `${base.replace('BUY or SKIP?', '')}${sit}\nYour JSON:` : null;
         if (!prompt) { bt.done++; continue; }
-        const d = await askDeepSeek(key, prompt, fetch, bt.model);
+        const d = bt.system ? await askDeepSeekPlan(key, bt.system, prompt, fetch, bt.model) : await askDeepSeek(key, prompt, fetch, bt.model);
         bt.fails = 0;
         const row = scoreToken(v, t.startedAt, d, { tokenId: id, name: t.name, campaignId: t.campaign_id, finalPct: t.finalPct });
         await db.prepare('INSERT OR REPLACE INTO deepseek_bt (run, token_id, data) VALUES (?,?,?)').bind(bt.run, id, JSON.stringify(row)).run();

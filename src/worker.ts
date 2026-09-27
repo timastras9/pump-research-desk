@@ -325,6 +325,8 @@ async function route(request: Request, env: Env): Promise<Response> {
  *  The next cron minute runs it and writes the model, answer, latency and any error into `result`. */
 async function deepseekSelfTest(env: Env) {
   const db = env.CRYPTO_STUDY;
+  const bt = await db.prepare("SELECT id FROM model_selftest WHERE status='pending-backtest' ORDER BY id LIMIT 1").first<{ id: number }>().catch(() => null);
+  if (bt) { const r = await env.ASTRAS.getByName('deepseek-backtest').startBacktest(); await db.prepare("UPDATE model_selftest SET status='done', at=?, result=? WHERE id=?").bind(Date.now(), JSON.stringify(r), bt.id).run(); return; }
   const row = await db.prepare("SELECT id FROM model_selftest WHERE status='pending' ORDER BY id LIMIT 1").first<{ id: number }>().catch(() => null);
   if (!row) return;
   await db.prepare("UPDATE model_selftest SET status='running', at=? WHERE id=?").bind(Date.now(), row.id).run();

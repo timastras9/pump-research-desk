@@ -57,12 +57,53 @@ export async function askDeepSeek(key: string, prompt: string, doFetch: typeof f
   return { buy: text.startsWith('BUY'), answer: text.slice(0, 20), latencyMs, inTok: j?.usage?.prompt_tokens ?? 0, outTok: j?.usage?.completion_tokens ?? 0 };
 }
 
+// ---- DeepSeek full decision: buy/skip + exit plan, with the exit lookup table (rag/exit-lookup.json) in the prompt ----
+export type Plan = { buy: boolean; tp: number; sl: number; tmax: number };
+export function lookupText(doc: any): string {
+  return (doc?.rows ?? []).filter((r: any) => r.level === 'change+activity').map((r: any) =>
+    `${r.change_30s} | ${r.activity_30s} | n=${r.n_train} | median peak ${r.median_peak_pct}% at ${r.median_secs_to_peak}s | drop before peak ${r.median_drop_before_peak_pct}% | rules v3 test ${r.rules_v3_test_avg_pct}% | best plan TP +${r.best_plan.take_profit_pct}% SL ${r.best_plan.stop_pct}% ${r.best_plan.time_limit_s}s -> test ${r.best_plan_test_avg_pct}%`).join('\n');
+}
+export const planSystem = (table: string) => `${DS_SYSTEM.replace('Answer with exactly one word: BUY or SKIP.', '')}
+EXIT LOOKUP (5,700+ past launches; situation = price change over the last 30 s | seconds with a price change in that window):
+${table}
+Match the token to its row, then decide. Reply with ONLY JSON: {"decision":"BUY" or "SKIP","take_profit":<pct>,"stop":<negative pct>,"time_limit_s":<seconds>}`;
+export function parsePlan(text: string): Plan {
+  const m = String(text).match(/\{[\s\S]*\}/); let j: any = {};
+  try { j = m ? JSON.parse(m[0]) : {}; } catch { /* not JSON */ }
+  const num = (x: any, d: number, lo: number, hi: number) => { const n = Number(x); return Number.isFinite(n) ? Math.min(hi, Math.max(lo, n)) : d; };
+  return { buy: String(j.decision ?? text).toUpperCase().includes('BUY'), tp: num(j.take_profit, 20, 1, 1000), sl: -Math.abs(num(j.stop, -10, -90, -1)), tmax: num(j.time_limit_s, 60, 5, 600) };
+}
+export function situationText(v: Px[], startAt: number) {
+  const until = startAt + DECIDE_MS, seen = v.filter(s => s.time <= until); if (seen.length < 2) return null;
+  const chg = (seen.at(-1)!.priceUsd / seen[0].priceUsd - 1) * 100, act = new Set(seen.filter((s, i) => i && s.priceUsd !== seen[i - 1].priceUsd).map(s => Math.floor(s.time / 1000))).size;
+  return `last 30 s: price change ${chg.toFixed(1)}%, seconds with a price change ${act}`;
+}
+/** Net % for a take-profit / stop / time plan entered at the first price at or after `at`; exits fill 2 s after the trigger. */
+export function planNetFrom(v: Px[], at: number, p: Plan, costPerSide = PAPER_RULES.costPerSide): number | null {
+  const i = v.findIndex(s => s.time >= at); if (i < 0 || i >= v.length - 1) return null;
+  const e = v[i]; let trig = v.length - 1;
+  for (let j = i + 1; j < v.length; j++) { const pct = (v[j].priceUsd / e.priceUsd - 1) * 100; if (pct >= p.tp || pct <= p.sl || v[j].time - e.time >= p.tmax * 1000) { trig = j; break; } }
+  const f = v.find(s => s.time >= v[trig].time + FILL_DELAY_MS) ?? v.at(-1)!;
+  return Math.round(((f.priceUsd / e.priceUsd) * (1 - costPerSide) / (1 + costPerSide) - 1) * 10000) / 100;
+}
+export async function askDeepSeekPlan(key: string, system: string, prompt: string, doFetch: typeof fetch = fetch, model = DS_MODEL) {
+  const t0 = Date.now();
+  const r = await doFetch('https://api.fireworks.ai/inference/v1/chat/completions', { method: 'POST',
+    headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify({ model, messages: [{ role: 'system', content: system }, { role: 'user', content: prompt }], max_tokens: 80, temperature: 0, reasoning_effort: 'none', service_tier: 'priority' }) });
+  const j = await r.json() as any, latencyMs = Date.now() - t0;
+  if (!r.ok) throw Error(`Fireworks ${r.status}: ${j?.error?.message ?? j?.message ?? 'request failed'}`);
+  const text = String(j?.choices?.[0]?.message?.content ?? '');
+  return { ...parsePlan(text), answer: text.slice(0, 120), latencyMs };
+}
+
 export type BtRow = { tokenId: string; name: string; campaignId: string; buy: boolean; answer: string; latencyMs: number; netAll: number | null; netDs: number | null; finalPct: number | null };
 /** Score one token: DeepSeek's decision, its latency-delayed fill, and the buy-everything baseline on the same token. */
-export function scoreToken(v: Px[], startAt: number, d: { buy: boolean; answer: string; latencyMs: number }, meta: { tokenId: string; name: string; campaignId: string; finalPct: number | null }): BtRow {
-  const decisionAt = startAt + DECIDE_MS;
+export function scoreToken(v: Px[], startAt: number, d: { buy: boolean; answer: string; latencyMs: number; tp?: number; sl?: number; tmax?: number }, meta: { tokenId: string; name: string; campaignId: string; finalPct: number | null }): BtRow {
+  const decisionAt = startAt + DECIDE_MS, at = decisionAt + d.latencyMs + FILL_DELAY_MS;
+  const plan = d.tp != null && d.sl != null && d.tmax != null ? { buy: d.buy, tp: d.tp, sl: d.sl, tmax: d.tmax } : null;
   return { ...meta, buy: d.buy, answer: d.answer, latencyMs: d.latencyMs,
-    netAll: netFrom(v, decisionAt + FILL_DELAY_MS), netDs: d.buy ? netFrom(v, decisionAt + d.latencyMs + FILL_DELAY_MS) : null };
+    netAll: netFrom(v, decisionAt + FILL_DELAY_MS), netDs: d.buy ? (plan ? planNetFrom(v, at, plan) : netFrom(v, at)) : null };
 }
 
 export function btSummary(rows: BtRow[]) {
