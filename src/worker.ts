@@ -5,6 +5,7 @@ import { timingSafeEqual } from 'node:crypto';
 import { costs } from './research-model';
 import { askAstra, logChat, type ChatEnv, type ChatTurn } from './astra-chat';
 import { exportStudy } from './rag-export';
+import { askDeepSeek, resolveDeepSeekModel, DS_MODEL } from './deepseek-bt';
 import { DurableObject } from 'cloudflare:workers';
 import { buy, close, equity, event, initialState, processTick, rejectionReasons, validateRules, type DeskState } from './engine';
 import { discover, mintPattern, quotes } from './market';
@@ -319,6 +320,30 @@ async function route(request: Request, env: Env): Promise<Response> {
   if (access && path === '/login.html') return Response.redirect(new URL('/', url).toString(), 302);
   return env.ASSETS.fetch(path === '/' ? new Request(new URL('/index.html', url), request) : request);
 }
+/** One-shot real test of the DeepSeek call from Cloudflare (the key never leaves the Worker). Queue it with:
+ *  npx wrangler d1 execute crypto-study --remote --command "CREATE TABLE IF NOT EXISTS model_selftest (id INTEGER PRIMARY KEY AUTOINCREMENT, status TEXT, at INTEGER, result TEXT); INSERT INTO model_selftest (status) VALUES ('pending')"
+ *  The next cron minute runs it and writes the model, answer, latency and any error into `result`. */
+async function deepseekSelfTest(env: Env) {
+  const db = env.CRYPTO_STUDY;
+  const row = await db.prepare("SELECT id FROM model_selftest WHERE status='pending' ORDER BY id LIMIT 1").first<{ id: number }>().catch(() => null);
+  if (!row) return;
+  await db.prepare("UPDATE model_selftest SET status='running', at=? WHERE id=?").bind(Date.now(), row.id).run();
+  const key = (env as unknown as { FIREWORKS_API_KEY?: string }).FIREWORKS_API_KEY;
+  let result: Record<string, unknown>;
+  try {
+    if (!key) throw Error('FIREWORKS_API_KEY is not set');
+    let model = DS_MODEL, listed: string | null = null;
+    try { listed = await resolveDeepSeekModel(key); } catch (e) { listed = `list failed: ${e instanceof Error ? e.message.slice(0, 200) : 'error'}`; }
+    const calls = [];
+    for (const m of [DS_MODEL, ...(listed && !listed.startsWith('list failed') && listed !== DS_MODEL ? [listed] : [])]) {
+      try { const d = await askDeepSeek(key, 'Recorded facts for the first 30 s: price up 22% with 15 trades, 19 buyers vs 6 sellers, not mayhem. BUY or SKIP?', fetch, m); calls.push({ model: m, ok: true, answer: d.answer, latencyMs: d.latencyMs }); model = m; }
+      catch (e) { calls.push({ model: m, ok: false, error: e instanceof Error ? e.message.slice(0, 300) : 'error' }); }
+    }
+    result = { resolved: listed, calls, working: calls.find(c => c.ok)?.model ?? null };
+  } catch (e) { result = { error: e instanceof Error ? e.message.slice(0, 300) : 'error' }; }
+  await db.prepare("UPDATE model_selftest SET status='done', result=? WHERE id=?").bind(JSON.stringify(result), row.id).run();
+}
+
 export default {
   async fetch(request, env) {
     let response: Response;
@@ -335,5 +360,8 @@ export default {
     headers.set('X-Frame-Options', 'DENY'); headers.set('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
     return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
   },
-  async scheduled(_controller, env) { const desk = env.DESK.getByName('timastras9'); await desk.refresh(); await desk.review(); },
+  async scheduled(_controller, env) {
+    await deepseekSelfTest(env).catch(() => {});   // runs only when a 'pending' row was queued in D1 model_selftest
+    const desk = env.DESK.getByName('timastras9'); await desk.refresh(); await desk.review();
+  },
 } satisfies ExportedHandler<Env>;

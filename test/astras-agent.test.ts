@@ -119,9 +119,9 @@ test('fireworks deepseek: right endpoint and model, native tools, key only in th
     { choices: [{ message: { content: 'No studies yet.' } }], usage: { prompt_tokens: 1200, completion_tokens: 10 } }];
   const fake = (async (url: string, init: any) => { seen.push({ url, body: JSON.parse(init.body), auth: init.headers.Authorization }); return { ok: true, status: 200, json: async () => replies.shift() }; }) as any;
   const r = await agentTurn(env() as any, [], 'How many studies?', fireworksModel('fw_test', fake));
-  assert.equal(r.answer, 'No studies yet.'); assert.equal(r.model, 'fireworks/deepseek-v4-pro'); assert.deepEqual(r.tools.map(t => t.name), ['read_doc']);
+  assert.equal(r.answer, 'No studies yet.'); assert.equal(r.model, 'fireworks/deepseek-v4p1-flash'); assert.deepEqual(r.tools.map(t => t.name), ['read_doc']);
   assert.equal(seen[0].url, 'https://api.fireworks.ai/inference/v1/chat/completions');
-  assert.equal(seen[0].body.model, 'accounts/fireworks/models/deepseek-v4-pro'); assert.equal(seen[0].auth, 'Bearer fw_test');
+  assert.equal(seen[0].body.model, 'accounts/fireworks/models/deepseek-v4p1-flash'); assert.equal(seen[0].body.service_tier, 'priority'); assert.equal(seen[0].auth, 'Bearer fw_test');
   assert.ok(Array.isArray(seen[0].body.tools)); assert.equal(seen[1].body.messages.at(-1).role, 'tool');
   assert.ok(!JSON.stringify(seen.map(s => s.body)).includes('fw_test'), 'key never in the request body');
   const bad = (async () => ({ ok: false, status: 401, json: async () => ({ error: { message: 'unauthorized' } }) })) as any;

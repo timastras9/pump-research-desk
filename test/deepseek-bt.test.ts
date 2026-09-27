@@ -55,6 +55,6 @@ test('deepseek call: thinking off, 5-token answer, key only in the header', asyn
   const fake = (async (url: string, init: any) => { seen = { url, body: JSON.parse(init.body), auth: init.headers.Authorization }; return { ok: true, status: 200, json: async () => ({ choices: [{ message: { content: 'BUY' } }], usage: { prompt_tokens: 300, completion_tokens: 1 } }) }; }) as any;
   const d = await askDeepSeek('fw_k', 'p', fake);
   assert.equal(d.buy, true); assert.equal(seen.body.reasoning_effort, 'none'); assert.equal(seen.body.max_tokens, 5);
-  assert.equal(seen.body.model, 'accounts/fireworks/models/deepseek-v4-pro'); assert.equal(seen.auth, 'Bearer fw_k');
+  assert.equal(seen.body.model, 'accounts/fireworks/models/deepseek-v4p1-flash'); assert.equal(seen.body.service_tier, 'priority'); assert.equal(seen.auth, 'Bearer fw_k');
   assert.ok(!JSON.stringify(seen.body).includes('fw_k'));
 });

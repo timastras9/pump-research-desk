@@ -5,7 +5,7 @@
 import { tradeFrom, PAPER_RULES } from './paper-trader';
 
 export const DECIDE_MS = 30_000, FILL_DELAY_MS = 2_000;
-export const DS_MODEL = 'accounts/fireworks/models/deepseek-v4-pro';
+export const DS_MODEL = 'accounts/fireworks/models/deepseek-v4p1-flash';   // Tim's Fireworks example
 export const DS_SYSTEM = 'You screen brand-new pump.fun token launches for a 10-minute paper trade. Costs are 6.5% round trip and the order fills a few seconds after you answer. Most launches lose; big pumps usually peak inside 60 s. Answer with exactly one word: BUY or SKIP.';
 
 type Px = { time: number; priceUsd: number };
@@ -35,7 +35,7 @@ export function netFrom(v: Px[], at: number): number | null {
 
 /** The DeepSeek model this Fireworks account can actually call (fixed ids 404 when not deployed for the account).
  *  Asks Fireworks' model list and prefers V4 Pro > V4 Flash > V3.2 > V3.1 > any DeepSeek. */
-export const DS_PREFERENCE = ['deepseek-v4-pro', 'deepseek-v4-flash', 'deepseek-v3p2', 'deepseek-v3p1'];
+export const DS_PREFERENCE = ['deepseek-v4p1-flash', 'deepseek-v4-pro', 'deepseek-v4-flash', 'deepseek-v3p2', 'deepseek-v3p1'];
 export async function resolveDeepSeekModel(key: string, doFetch: typeof fetch = fetch): Promise<string> {
   const r = await doFetch('https://api.fireworks.ai/inference/v1/models', { headers: { Authorization: `Bearer ${key}`, Accept: 'application/json' } });
   const j = await r.json() as any;
@@ -50,7 +50,7 @@ export async function askDeepSeek(key: string, prompt: string, doFetch: typeof f
   const t0 = Date.now();
   const r = await doFetch('https://api.fireworks.ai/inference/v1/chat/completions', { method: 'POST',
     headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', Accept: 'application/json' },
-    body: JSON.stringify({ model, messages: [{ role: 'system', content: DS_SYSTEM }, { role: 'user', content: prompt }], max_tokens: 5, temperature: 0, reasoning_effort: 'none' }) });
+    body: JSON.stringify({ model, messages: [{ role: 'system', content: DS_SYSTEM }, { role: 'user', content: prompt }], max_tokens: 5, temperature: 0, reasoning_effort: 'none', service_tier: 'priority' }) });
   const j = await r.json() as any, latencyMs = Date.now() - t0;
   if (!r.ok) throw Error(`Fireworks ${r.status}: ${j?.error?.message ?? j?.message ?? 'request failed'}`);
   const text = String(j?.choices?.[0]?.message?.content ?? '').trim().toUpperCase();
