@@ -14,11 +14,7 @@ Cloudflare in a Durable Object, working on the live study data.
     - `query_db(sql)`: one SELECT/WITH on D1 `crypto-study`, only tables study_campaigns,
       study_tokens, model_runs, model_rows, astra_log; writes refused; 200-row cap.
     - `read_doc(key)`: one file from R2 under `rag/` only.
-    - `propose_change(title, why, files)`: the ONLY write. New branch `astras/<time>` in
-      GITHUB_REPO, commits up to 5 files, opens a DRAFT pull request. Never touches main; Tim merges.
-      Paths limited to src/, public/, research/, scripts/, test/, data-analysis/, docs/, tasks/
-      (never .github/, wrangler config, package files, secrets). Token: fine-grained, this repo
-      only, Contents + Pull requests read/write.
+    - `read_code(path?, branch?)`: public repo timastras9/pump-research-desk only, no token (list files or read one).
   - Cost cap $0.50 per question across all steps (stops and says so).
 - [x] Worker: `/api/chat` goes to the session's AstrasAgent; still behind sign-in; still logged to `astra_log`.
 - [x] `wrangler.jsonc`: `ASTRAS` Durable Object binding + migration `v3` (new SQLite class).
@@ -29,7 +25,7 @@ Cloudflare in a Durable Object, working on the live study data.
 - [ ] Deploy: only after Tim's OK (check no study is recording).
 
 ## Out of scope (not in this build)
-- Shell commands, commits to main, deploys, spawning other agents, any network call other than the
+- Any write (code, data, GitHub), credentials, shell, spawning agents, any network call other than the
   one GitHub repo.
 - Running the Open Astras Node runtime itself (Express + Postgres + Typesense) on Cloudflare.
 - Changing rules, models or studies: the agent answers and suggests; Tim decides.

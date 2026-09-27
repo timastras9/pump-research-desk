@@ -3,7 +3,8 @@
 //   search_data     AI Search instance (study export)        read
 //   query_db        D1, 5 study tables, one SELECT, 200 rows  read
 //   read_doc        R2, keys under rag/ only                 read
-//   propose_change  GITHUB_REPO only: new astras/* branch + DRAFT pull request; never main; Tim merges
+//   read_code       public repo timastras9/pump-research-desk only, no token   read
+// No writes anywhere, no credentials, no network beyond these. Code suggestions go in the answer for Tim to apply.
 import { ASTRAS_PERSONA } from './astras-prompt';
 import { ASTRA_MODEL, estimateUsd } from './astra-review';
 
@@ -38,17 +39,13 @@ export const safeDocKey = (key: string) => {
   return k;
 };
 
-export const CHANGE_PATHS = /^(src|public|research|scripts|test|data-analysis|docs|tasks)\/[A-Za-z0-9._\/-]+$/;
-export type FileChange = { path: string; content: string };
-export function safeChange(files: unknown): FileChange[] {
-  if (!Array.isArray(files) || !files.length || files.length > 5) throw Error('propose 1 to 5 files');
-  return files.map((f: any) => {
-    const path = String(f?.path ?? '').replace(/^\/+/, ''), content = String(f?.content ?? '');
-    if (!CHANGE_PATHS.test(path) || path.includes('..') || /(^|\/)\.|\.env|secret|credential/i.test(path))
-      throw Error(`path "${path}" is not allowed (src/, public/, research/, scripts/, test/, data-analysis/, docs/, tasks/)`);
-    if (!content.trim() || content.length > 200_000) throw Error(`content for ${path} must be 1 to 200,000 characters`);
-    return { path, content };
-  });
+export const CODE_REPO = 'timastras9/pump-research-desk';   // public; read without a token
+/** Branch and path for read_code, or throws. Only this one repo; no traversal. */
+export function safeCodeRef(branch: unknown, path: unknown) {
+  const b = String(branch ?? 'main').trim() || 'main', p = String(path ?? '').trim().replace(/^\/+/, '');
+  if (!/^[A-Za-z0-9._\/-]{1,100}$/.test(b) || b.includes('..')) throw Error('invalid branch name');
+  if (p && (!/^[A-Za-z0-9._\/ -]{1,300}$/.test(p) || p.includes('..'))) throw Error('invalid file path');
+  return { branch: b, path: p };
 }
 
 // ---------------- tools ----------------
@@ -59,18 +56,16 @@ export const TOOLS = [
     parameters: { type: 'object', properties: { sql: { type: 'string' } }, required: ['sql'] } } },
   { type: 'function', function: { name: 'read_doc', description: 'Read one export document by key, e.g. rag/index.json, rag/glossary.md, rag/studies/..., rag/tokens/..., rag/recordings/...',
     parameters: { type: 'object', properties: { key: { type: 'string' } }, required: ['key'] } } },
-  { type: 'function', function: { name: 'propose_change', description: 'Propose a code change to the pump-research-desk repo: commits the files to a new branch and opens a DRAFT pull request for Tim to review and merge. Only when Tim asks for a change. Full file contents, 1-5 files, under src/, public/, research/, scripts/, test/, data-analysis/, docs/ or tasks/.',
-    parameters: { type: 'object', properties: { title: { type: 'string' }, why: { type: 'string' },
-      files: { type: 'array', items: { type: 'object', properties: { path: { type: 'string' }, content: { type: 'string' } }, required: ['path', 'content'] } } },
-      required: ['title', 'why', 'files'] } } },
+  { type: 'function', function: { name: 'read_code', description: `Read the project's code (public repo ${CODE_REPO}). Without path: list the files. With path: read that file. branch defaults to main; the newest work is on worktree-deploy-10min-studies.`,
+    parameters: { type: 'object', properties: { path: { type: 'string' }, branch: { type: 'string' } } } } },
 ];
 
 type SearchNs = { get(name: string): { search(q: unknown): Promise<{ chunks?: { score?: number; text?: string; item?: { key?: string } }[] }> } };
 export type AgentEnv = { AI: Pick<Ai, 'run'>; CRYPTO_STUDY: Pick<D1Database, 'prepare'>; CRYPTO_MEDIA: Pick<R2Bucket, 'get'>;
-  AI_SEARCH?: SearchNs; AI_SEARCH_INSTANCE?: string; GITHUB_TOKEN?: string; GITHUB_REPO?: string };
+  AI_SEARCH?: SearchNs; AI_SEARCH_INSTANCE?: string };
 const clip = (s: string, n: number) => (s.length > n ? s.slice(0, n) + `\n…[truncated ${s.length - n} chars]` : s);
 
-export async function runTool(env: AgentEnv, name: string, args: any, doFetch: typeof fetch = fetch): Promise<{ ok: boolean; out: string; pr?: string }> {
+export async function runTool(env: AgentEnv, name: string, args: any, doFetch: typeof fetch = fetch): Promise<{ ok: boolean; out: string }> {
   try {
     if (name === 'search_data') {
       if (!env.AI_SEARCH || !env.AI_SEARCH_INSTANCE) return { ok: false, out: 'document search is not connected' };
@@ -85,75 +80,57 @@ export async function runTool(env: AgentEnv, name: string, args: any, doFetch: t
       const o = await env.CRYPTO_MEDIA.get(safeDocKey(args?.key));
       return o ? { ok: true, out: clip(await o.text(), 60000) } : { ok: false, out: 'document not found' };
     }
-    if (name === 'propose_change') {
-      const pr = await openPullRequest(env, String(args?.title ?? 'Astras change'), String(args?.why ?? ''), safeChange(args?.files), doFetch);
-      return { ok: true, out: `Draft pull request opened: ${pr}`, pr };
+    if (name === 'read_code') {
+      const { branch, path } = safeCodeRef(args?.branch, args?.path), headers = { 'User-Agent': 'astras-agent' };
+      if (!path) {
+        const r = await doFetch(`https://api.github.com/repos/${CODE_REPO}/git/trees/${encodeURIComponent(branch)}?recursive=1`, { headers: { ...headers, Accept: 'application/vnd.github+json' } });
+        if (!r.ok) return { ok: false, out: `GitHub ${r.status} listing ${branch}` };
+        const tree = ((await r.json()) as { tree?: { path: string; type: string; size?: number }[] }).tree ?? [];
+        return { ok: true, out: clip(tree.filter(f => f.type === 'blob' && !/(^|\/)node_modules\//.test(f.path)).map(f => `${f.path} (${f.size ?? 0} B)`).join('\n'), 30000) };
+      }
+      const r = await doFetch(`https://raw.githubusercontent.com/${CODE_REPO}/${branch.split('/').map(encodeURIComponent).join('/')}/${path.split('/').map(encodeURIComponent).join('/')}`, { headers });
+      return r.ok ? { ok: true, out: clip(await r.text(), 60000) } : { ok: false, out: `GitHub ${r.status}: ${path} not found on ${branch}` };
     }
     return { ok: false, out: `unknown tool ${name}` };
   } catch (e) { return { ok: false, out: e instanceof Error ? e.message.slice(0, 500) : 'tool failed' }; }
 }
 
-const b64 = (s: string) => { let bin = ''; for (const b of new TextEncoder().encode(s)) bin += String.fromCharCode(b); return btoa(bin); };
-
-/** New branch astras/<time> from the default branch, one commit per file, then a DRAFT pull request. Never writes main. */
-export async function openPullRequest(env: AgentEnv, title: string, why: string, files: FileChange[], doFetch: typeof fetch = fetch, now = Date.now()) {
-  if (!env.GITHUB_TOKEN || !env.GITHUB_REPO || !/^[\w.-]+\/[\w.-]+$/.test(env.GITHUB_REPO)) throw Error('GITHUB_TOKEN / GITHUB_REPO not set');
-  const api = `https://api.github.com/repos/${env.GITHUB_REPO}`;
-  const headers = { Authorization: `Bearer ${env.GITHUB_TOKEN}`, Accept: 'application/vnd.github+json', 'User-Agent': 'astras-agent', 'Content-Type': 'application/json' };
-  const gh = async (path: string, init: RequestInit = {}) => {
-    const r = await doFetch(api + path, { ...init, headers }); const j = await r.json() as any;
-    if (!r.ok && r.status !== 404) throw Error(`GitHub ${r.status}: ${j?.message ?? 'request failed'}`);
-    return { status: r.status, j };
-  };
-  const base = (await gh('')).j.default_branch as string;
-  const head = (await gh(`/git/ref/heads/${base}`)).j.object.sha as string;
-  const branch = `astras/${new Date(now).toISOString().replace(/[:.]/g, '-').slice(0, 19)}`;
-  await gh('/git/refs', { method: 'POST', body: JSON.stringify({ ref: `refs/heads/${branch}`, sha: head }) });
-  for (const f of files) {
-    const cur = await gh(`/contents/${f.path}?ref=${branch}`);
-    await gh(`/contents/${f.path}`, { method: 'PUT', body: JSON.stringify({ message: `Astras: ${title} (${f.path})`, content: b64(f.content), branch, ...(cur.status === 200 ? { sha: cur.j.sha } : {}) }) });
-  }
-  const pr = await gh('/pulls', { method: 'POST', body: JSON.stringify({ title: `Astras: ${title}`, head: branch, base, draft: true,
-    body: `${why}\n\nFiles: ${files.map(f => '`' + f.path + '`').join(', ')}\n\nProposed by the Astras agent from Ask Astra. Review before merging.` }) });
-  return pr.j.html_url as string;
-}
-
 export const AGENT_RULES = `
 ## How you work here (Cloudflare, Ask Astra)
-Tools: search_data (study export), query_db (one read-only SELECT), read_doc (rag/ files), propose_change (draft pull request only).
+Tools (all read-only): search_data (study export), query_db (one SELECT), read_doc (rag/ files), read_code (the project's public repo).
 - Compute numbers with query_db instead of guessing; show the SQL you used for any number that matters.
 - rag/index.json lists every study; rag/glossary.md explains every field.
-- propose_change only when Tim asks for a change. It opens a DRAFT pull request; Tim reviews and merges. Never claim a change is live.
+- You cannot change code, data or settings. Put proposed code in a markdown code block for Tim to apply.
 - Lead with the answer and the numbers. Short paragraphs or bullets.`;
 
 // ---------------- the agent turn (the Durable Object itself is in astras-do.ts) ----------------
 type Msg = { role: string; content: string | null; tool_calls?: any[]; tool_call_id?: string };
-export type AgentReply = { answer: string | null; error: string | null; tools: { name: string; ok: boolean; detail: string }[]; pullRequests: string[]; actualUsd: number | null; estimatedUsd: number; sources: string[]; model: string };
+export type AgentReply = { answer: string | null; error: string | null; tools: { name: string; ok: boolean; detail: string }[]; actualUsd: number | null; estimatedUsd: number; sources: string[]; model: string };
 
 /** The tool loop, separate from storage so it can be tested with a fake model. */
 export async function agentTurn(env: AgentEnv, history: Msg[], question: string, doFetch: typeof fetch = fetch): Promise<AgentReply> {
   const messages: Msg[] = [{ role: 'system', content: ASTRAS_PERSONA + '\n' + AGENT_RULES }, ...history, { role: 'user', content: question }];
-  const tools: AgentReply['tools'] = [], prs: string[] = [], sources = new Set<string>();
+  const tools: AgentReply['tools'] = [], sources = new Set<string>();
   let usd = 0, known = true;
   for (let step = 0; step < MAX_STEPS; step++) {
     const est = estimateUsd(JSON.stringify(messages).length / CHARS_PER_TOKEN, MAX_OUTPUT);
-    if (usd + est > AGENT_CAP_USD) return { answer: null, error: `stopped: the next step would pass the $${AGENT_CAP_USD} cap`, tools, pullRequests: prs, actualUsd: known ? r3(usd) : null, estimatedUsd: r3(usd + est), sources: [...sources], model: ASTRA_MODEL };
+    if (usd + est > AGENT_CAP_USD) return { answer: null, error: `stopped: the next step would pass the $${AGENT_CAP_USD} cap`, tools, actualUsd: known ? r3(usd) : null, estimatedUsd: r3(usd + est), sources: [...sources], model: ASTRA_MODEL };
     const res = await (env.AI.run as (m: string, i: unknown) => Promise<any>)(ASTRA_MODEL, { messages, tools: TOOLS, max_completion_tokens: MAX_OUTPUT });
     const u = res?.usage; if (u?.prompt_tokens != null && u?.completion_tokens != null) usd += estimateUsd(u.prompt_tokens, u.completion_tokens); else { known = false; usd += est; }
     const msg = res?.choices?.[0]?.message ?? {}, calls = msg.tool_calls ?? [];
-    if (!calls.length) return { answer: msg.content ?? '', error: null, tools, pullRequests: prs, actualUsd: known ? r3(usd) : null, estimatedUsd: r3(usd), sources: [...sources], model: ASTRA_MODEL };
+    if (!calls.length) return { answer: msg.content ?? '', error: null, tools, actualUsd: known ? r3(usd) : null, estimatedUsd: r3(usd), sources: [...sources], model: ASTRA_MODEL };
     messages.push({ role: 'assistant', content: msg.content ?? null, tool_calls: calls });
     for (const c of calls) {
       let args: any = {}; try { args = JSON.parse(c.function?.arguments || '{}'); } catch { /* bad JSON -> tool reports the error */ }
       const r = await runTool(env, c.function?.name, args, doFetch);
-      if (r.pr) prs.push(r.pr);
+      if (c.function?.name === 'read_code' && r.ok && args.path) sources.add(`${CODE_REPO}/${args.branch ?? 'main'}/${args.path}`);
       if (c.function?.name === 'read_doc' && r.ok) sources.add(String(args.key));
       if (c.function?.name === 'search_data' && r.ok) for (const m of r.out.matchAll(/^--- (\S+)/gm)) sources.add(m[1]);
-      tools.push({ name: c.function?.name, ok: r.ok, detail: c.function?.name === 'query_db' ? String(args.sql ?? '').slice(0, 300) : c.function?.name === 'propose_change' ? (r.pr ?? r.out) : String(args.query ?? args.key ?? '').slice(0, 200) });
+      tools.push({ name: c.function?.name, ok: r.ok, detail: c.function?.name === 'query_db' ? String(args.sql ?? '').slice(0, 300) : String(args.query ?? args.key ?? (args.path ? `${args.branch ?? 'main'}:${args.path}` : `list ${args.branch ?? 'main'}`)).slice(0, 200) });
       messages.push({ role: 'tool', tool_call_id: c.id, content: r.out });
     }
   }
-  return { answer: null, error: `stopped after ${MAX_STEPS} tool steps without a final answer`, tools, pullRequests: prs, actualUsd: known ? r3(usd) : null, estimatedUsd: r3(usd), sources: [...sources], model: ASTRA_MODEL };
+  return { answer: null, error: `stopped after ${MAX_STEPS} tool steps without a final answer`, tools, actualUsd: known ? r3(usd) : null, estimatedUsd: r3(usd), sources: [...sources], model: ASTRA_MODEL };
 }
 const r3 = (x: number) => Math.round(x * 1000) / 1000;
 export { HISTORY_TURNS };

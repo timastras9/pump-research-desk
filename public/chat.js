@@ -5,9 +5,8 @@ export function turnHtml(t){
  const meta=[t.error?`<span class="error">${esc(t.error)}</span>`:'',t.actualUsd!=null?`$${Number(t.actualUsd).toFixed(3)}`:t.estimatedUsd!=null?`~$${Number(t.estimatedUsd).toFixed(3)} est.`:'',
   t.ragConnected===false?'document search not connected (index only)':'',t.ragError?`search error: ${esc(t.ragError)}`:''].filter(Boolean).join(' · ');
  const tools=(t.tools||[]).length?`<details><summary>${t.tools.length} tool steps</summary><ul>${t.tools.map(x=>`<li class="${x.ok?'':'error'}"><strong>${esc(x.name)}</strong> <span class="mint">${esc(x.detail)}</span></li>`).join('')}</ul></details>`:'';
- const prs=(t.pullRequests||[]).map(u=>/^https:\/\/github\.com\//.test(u)?`<p>Draft pull request for review: <a href="${esc(u)}" target="_blank" rel="noopener">${esc(u)}</a></p>`:'').join('');
  const src=(t.sources||[]).length?`<details><summary>${t.sources.length} source documents</summary><ul>${t.sources.map(s=>`<li class="mint">${esc(s)}</li>`).join('')}</ul></details>`:'';
- return `<article class="chat-turn astra"><p class="label">Astra</p><p class="chat-text">${esc(t.content||'')}</p>${prs}<p class="muted small">${meta}</p>${tools}${src}</article>`;
+ return `<article class="chat-turn astra"><p class="label">Astra</p><p class="chat-text">${esc(t.content||'')}</p><p class="muted small">${meta}</p>${tools}${src}</article>`;
 }
 export function ragStatusText(d){
  const n=d?.index?.studies?.length??0,all=d?.studies?.length??0;

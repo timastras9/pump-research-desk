@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { safeSelect, safeDocKey, safeChange, runTool, agentTurn, openPullRequest, AGENT_CAP_USD } from '../src/astras-agent';
+import { safeSelect, safeDocKey, safeCodeRef, runTool, agentTurn, TOOLS, AGENT_CAP_USD } from '../src/astras-agent';
 
 test('query_db guard: one read-only SELECT over the 5 study tables, row cap added', () => {
   assert.equal(safeSelect("SELECT json_extract(data,'$.name') FROM study_tokens WHERE campaign_id='x';"), "SELECT * FROM (SELECT json_extract(data,'$.name') FROM study_tokens WHERE campaign_id='x') LIMIT 200");
@@ -17,11 +17,24 @@ test('read_doc guard: rag/ only', () => {
   for (const bad of ['studies/x/0.jpg', 'models/model-v3.json', 'rag/../models/model-v3.json', 'runs/a.json']) assert.throws(() => safeDocKey(bad), Error, bad);
 });
 
-test('propose_change guard: 1-5 files, allowed folders only, never CI, config or secrets', () => {
-  assert.deepEqual(safeChange([{ path: 'research/engine.py', content: 'x = 1' }]), [{ path: 'research/engine.py', content: 'x = 1' }]);
-  for (const bad of [[], [{ path: '.github/workflows/x.yml', content: 'a' }], [{ path: 'wrangler.jsonc', content: 'a' }], [{ path: 'package.json', content: 'a' }],
-    [{ path: 'src/.env', content: 'a' }], [{ path: 'src/../wrangler.jsonc', content: 'a' }], [{ path: 'src/a.ts', content: '' }], Array(6).fill({ path: 'src/a.ts', content: 'a' })])
-    assert.throws(() => safeChange(bad), Error, JSON.stringify(bad).slice(0, 60));
+test('zero trust: only the four read tools exist', () => {
+  assert.deepEqual(TOOLS.map(t => t.function.name), ['search_data', 'query_db', 'read_doc', 'read_code']);
+});
+
+test('read_code: only the public project repo, no traversal, no token', async () => {
+  assert.deepEqual(safeCodeRef(undefined, '/src/worker.ts'), { branch: 'main', path: 'src/worker.ts' });
+  for (const [b, p] of [['main', '../x'], ['../main', 'a'], ['main;rm', 'a'], ['main', 'a?b=1']]) assert.throws(() => safeCodeRef(b, p), Error, `${b} ${p}`);
+  const urls: { url: string; auth: unknown }[] = [];
+  const fake = (async (url: string, init: any) => { urls.push({ url, auth: init?.headers?.Authorization }); return url.includes('/git/trees/')
+    ? { ok: true, status: 200, json: async () => ({ tree: [{ path: 'src/worker.ts', type: 'blob', size: 10 }, { path: 'node_modules/x.js', type: 'blob' }, { path: 'src', type: 'tree' }] }) }
+    : { ok: true, status: 200, text: async () => 'export {}' }; }) as any;
+  const list = await runTool(env() as any, 'read_code', {}, fake);
+  assert.equal(list.out, 'src/worker.ts (10 B)');
+  const file = await runTool(env() as any, 'read_code', { path: 'src/worker.ts', branch: 'worktree-deploy-10min-studies' }, fake);
+  assert.equal(file.out, 'export {}');
+  assert.deepEqual(urls.map(u => u.url), ['https://api.github.com/repos/timastras9/pump-research-desk/git/trees/main?recursive=1',
+    'https://raw.githubusercontent.com/timastras9/pump-research-desk/worktree-deploy-10min-studies/src/worker.ts']);
+  assert.ok(urls.every(u => u.auth === undefined), 'no credentials sent');
 });
 
 const env = (over: any = {}) => ({ AI: { run: async () => ({}) }, CRYPTO_STUDY: { prepare: (sql: string) => ({ all: async () => ({ results: [{ sql }] }) }) },
@@ -35,23 +48,7 @@ test('tools: DB runs only the guarded SQL; blocked SQL never reaches D1; docs li
   assert.equal(bad.ok, false); assert.equal(ran, 1, 'blocked statement never prepared');
   assert.equal((await runTool(e as any, 'read_doc', { key: 'rag/index.json' })).out, '{"studies":[]}');
   assert.equal((await runTool(e as any, 'read_doc', { key: 'models/model-v3.json' })).ok, false);
-  assert.equal((await runTool(e as any, 'propose_change', { title: 't', why: 'w', files: [{ path: 'src/a.ts', content: 'a' }] })).ok, false, 'no token -> refused');
-});
-
-test('pull request: new astras/* branch from the default branch, draft PR, never writes main', async () => {
-  const calls: { url: string; method: string; body: any }[] = [];
-  const fake = (async (url: string, init: any = {}) => {
-    const method = init.method ?? 'GET', body = init.body ? JSON.parse(init.body) : null; calls.push({ url, method, body });
-    const j = url.endsWith('/pump-research-desk') ? { default_branch: 'main' } : url.includes('/git/ref/heads/main') ? { object: { sha: 'abc' } }
-      : url.includes('/contents/') && method === 'GET' ? { message: 'Not Found' } : url.endsWith('/pulls') ? { html_url: 'https://github.com/timastras9/pump-research-desk/pull/7' } : {};
-    return { ok: !(url.includes('/contents/') && method === 'GET'), status: url.includes('/contents/') && method === 'GET' ? 404 : 200, json: async () => j };
-  }) as any;
-  const url = await openPullRequest({ GITHUB_TOKEN: 't', GITHUB_REPO: 'timastras9/pump-research-desk' } as any, 'Tighter stop', 'Stops fill at -35%', [{ path: 'research/engine.py', content: 'x' }], fake, Date.UTC(2026, 8, 27, 3, 4, 5));
-  assert.equal(url, 'https://github.com/timastras9/pump-research-desk/pull/7');
-  const ref = calls.find(c => c.url.endsWith('/git/refs'))!; assert.equal(ref.body.ref, 'refs/heads/astras/2026-09-27T03-04-05'); assert.equal(ref.body.sha, 'abc');
-  const put = calls.find(c => c.method === 'PUT')!; assert.equal(put.body.branch, 'astras/2026-09-27T03-04-05');
-  const pr = calls.find(c => c.url.endsWith('/pulls'))!; assert.equal(pr.body.draft, true); assert.equal(pr.body.base, 'main'); assert.equal(pr.body.head, 'astras/2026-09-27T03-04-05');
-  assert.ok(!calls.some(c => c.method !== 'GET' && /heads\/main|"branch":"main"/.test(c.url + JSON.stringify(c.body ?? {}))), 'nothing written to main');
+  assert.equal((await runTool(e as any, 'propose_change', { title: 't' })).ok, false, 'no write tool');
 });
 
 test('agent loop: calls a tool, feeds the result back, answers; lists tools and sources', async () => {

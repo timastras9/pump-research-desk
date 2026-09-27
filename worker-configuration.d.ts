@@ -10,8 +10,6 @@ interface __BaseEnv_Env {
 	ASSETS: Fetcher;
 	AI_SEARCH_INSTANCE: "crypto-study-media";
 	DASHBOARD_PASSWORD: string;
-	GITHUB_TOKEN?: string;
-	GITHUB_REPO?: string;
 	DESK: DurableObjectNamespace<import("./src/worker").ResearchDesk>;
 	STUDIES: DurableObjectNamespace<import("./src/worker").StudyCoordinator>;
 	RECORDERS: DurableObjectNamespace<import("./src/worker").StudyRecorder>;
