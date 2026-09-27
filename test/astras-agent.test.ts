@@ -6,10 +6,30 @@ test('query_db guard: one read-only SELECT over the 5 study tables, row cap adde
   assert.equal(safeSelect("SELECT json_extract(data,'$.name') FROM study_tokens WHERE campaign_id='x';"), "SELECT * FROM (SELECT json_extract(data,'$.name') FROM study_tokens WHERE campaign_id='x') LIMIT 200");
   assert.ok(safeSelect('WITH t AS (SELECT data FROM study_tokens) SELECT count(*) FROM t JOIN model_rows m ON 1'));
   assert.ok(safeSelect("SELECT s.value FROM study_tokens t, json_each(t.data,'$.series') s"));
-  assert.ok(safeSelect("SELECT * FROM astra_log WHERE question LIKE '%delete%'"), 'keywords inside strings are fine');
+  assert.ok(safeSelect("SELECT data FROM study_tokens WHERE data LIKE '%delete%'"), 'keywords inside strings are fine');
   for (const bad of ['DELETE FROM study_tokens', 'SELECT 1; DROP TABLE study_tokens', 'SELECT * FROM study_chunks', 'SELECT * FROM study_tokens, study_chunks',
     'SELECT name FROM sqlite_master', 'SELECT * FROM _cf_KV', 'WITH x AS (SELECT 1) UPDATE study_tokens SET data=1', 'PRAGMA table_info(study_tokens)', 'SELECT * FROM unknown_table'])
     assert.throws(() => safeSelect(bad), Error, bad);
+});
+
+test('red-team audit bypasses are all blocked (F1, F2, F5)', () => {
+  for (const bad of ['SELECT * FROM "secret_tbl"', 'SELECT * FROM/**/secret_tbl', 'SELECT * FROM [secret_tbl]', 'SELECT * FROM `secret_tbl`',
+    'SELECT * FROM study_tokens, secret_tbl', 'SELECT * FROM study_tokens t, secret_tbl s WHERE 1', 'SELECT * FROM study_tokens, pragma_table_list',
+    'SELECT * FROM pragma_table_info(\'study_tokens\')', 'SELECT 1 -- x\nFROM secret_tbl', 'WITH c AS (SELECT 1 x UNION ALL SELECT x+1 FROM c) SELECT count(*) FROM c',
+    'WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM c) SELECT count(*) FROM c', 'SELECT * FROM astra_log', 'SELECT * FROM study_tokens JOIN secret_tbl ON 1',
+    'SELECT * FROM study_tokens LEFT JOIN "secret_tbl" ON 1', 'SELECT (SELECT count(*) FROM secret_tbl) FROM study_tokens'])
+    assert.throws(() => safeSelect(bad), Error, bad);
+  // The exact query the agent wrote in the live end-to-end test still runs.
+  assert.ok(safeSelect(`SELECT t.campaign_id, json_extract(t.data, '$.paper.exitReason') AS exit_reason, COUNT(*) AS trades, SUM(json_extract(t.data, '$.paper.pnlUsd')) AS net_pnl_usd
+    FROM study_tokens AS t WHERE t.campaign_id IN (SELECT id FROM study_campaigns WHERE started_at = (SELECT MAX(started_at) FROM study_campaigns))
+    AND json_extract(t.data, '$.paper.exitReason') IS NOT NULL GROUP BY t.campaign_id, json_extract(t.data, '$.paper.exitReason') ORDER BY net_pnl_usd ASC;`));
+  assert.ok(safeSelect('WITH a AS (SELECT data FROM study_tokens), b AS (SELECT data FROM a) SELECT count(*) FROM b'), 'CTEs that use earlier CTEs are fine');
+});
+
+test('read_code: fixed branches only, no PR refs (F3)', () => {
+  assert.throws(() => safeCodeRef('refs/pull/1/head', 'src/a.ts'), Error);
+  assert.throws(() => safeCodeRef('some-branch', 'src/a.ts'), Error);
+  assert.deepEqual(safeCodeRef('worktree-deploy-10min-studies', 'src/a.ts'), { branch: 'worktree-deploy-10min-studies', path: 'src/a.ts' });
 });
 
 test('read_doc guard: rag/ only', () => {

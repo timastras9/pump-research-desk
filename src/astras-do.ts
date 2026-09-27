@@ -11,7 +11,10 @@ export class AstrasAgent extends DurableObject<Env> {
   /** One question in this session: remembers the conversation, runs the tool loop, stores the answer. */
   async chat(question: string): Promise<AgentReply> {
     const history = this.ctx.storage.sql.exec<{ role: string; content: string }>('SELECT role, content FROM (SELECT * FROM turns ORDER BY id DESC LIMIT ?) ORDER BY id', HISTORY_TURNS).toArray();
-    const reply = await agentTurn(this.env as unknown as AgentEnv, history, question);
+    // Only the bindings the tools use; secrets never reach the agent (audit F4).
+    const e = this.env as unknown as AgentEnv;
+    const env: AgentEnv = { AI: e.AI, CRYPTO_STUDY: e.CRYPTO_STUDY, CRYPTO_MEDIA: e.CRYPTO_MEDIA, AI_SEARCH: e.AI_SEARCH, AI_SEARCH_INSTANCE: e.AI_SEARCH_INSTANCE };
+    const reply = await agentTurn(env, history, question);
     this.ctx.storage.sql.exec('INSERT INTO turns (at, role, content) VALUES (?,?,?)', Date.now(), 'user', question);
     if (reply.answer) this.ctx.storage.sql.exec('INSERT INTO turns (at, role, content) VALUES (?,?,?)', Date.now(), 'assistant', reply.answer);
     return reply;

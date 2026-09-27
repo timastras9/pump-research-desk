@@ -13,23 +13,34 @@ export const MAX_STEPS = 6;
 const MAX_OUTPUT = 4000, HISTORY_TURNS = 30, CHARS_PER_TOKEN = 3;
 
 // ---------------- guards (pure) ----------------
-export const DB_TABLES = ['study_campaigns', 'study_tokens', 'model_runs', 'model_rows', 'astra_log'];
-const WRITE_WORDS = /\b(insert|update|delete|drop|alter|create|replace|pragma|attach|detach|vacuum|reindex|analyze|begin|commit|rollback|savepoint|release)\b/i;
+// astra_log is NOT readable: an injected answer could otherwise travel into later sessions (audit F5).
+export const DB_TABLES = ['study_campaigns', 'study_tokens', 'model_runs', 'model_rows'];
+const WRITE_WORDS = /\b(insert|update|delete|drop|alter|create|replace|pragma|attach|detach|vacuum|reindex|analyze|begin|commit|rollback|savepoint|release|recursive|load_extension)\b/i;
 const TABLE_FUNCS = new Set(['json_each', 'json_tree']);
+const STOP = String.raw`(?=\bwhere\b|\bgroup\b|\border\b|\blimit\b|\bhaving\b|\bunion\b|\bintersect\b|\bexcept\b|\bwindow\b|\b(?:left|right|full|inner|outer|cross|natural)\b|\bjoin\b|\bon\b|\)|$)`;
 
-/** One read-only statement over the allowed tables, wrapped with a row cap. Throws with the reason otherwise. */
+/** Body of the parenthesised group that opens at s[open] (naive paren matching; strings already blanked). */
+function group(s: string, open: number) { let d = 0; for (let i = open; i < s.length; i++) { if (s[i] === '(') d++; else if (s[i] === ')' && --d === 0) return s.slice(open + 1, i); } return s.slice(open + 1); }
+
+/** One read-only statement over the allowed tables, wrapped with a row cap. Throws with the reason otherwise.
+ *  Hardened after the red-team audit (F1/F2): no quoted/bracketed identifiers or comments, every table in every
+ *  FROM list and JOIN checked against the allowlist, table-valued pragma functions refused, no self-calling CTEs. */
 export function safeSelect(sql: string, maxRows = 200) {
   const s = sql.trim().replace(/;\s*$/, '');
   if (!/^(select|with)\b/i.test(s)) throw Error('only one SELECT (or WITH ... SELECT) statement is allowed');
-  if (s.includes(';')) throw Error('only one statement is allowed');
-  if (WRITE_WORDS.test(s.replace(/'(?:[^']|'')*'/g, "''"))) throw Error('write or schema keywords are not allowed');
-  const other = s.match(/\b(study_chunks|sqlite_\w+|_cf_\w+|d1_\w+)\b/i);   // catches comma joins and subqueries too
-  if (other) throw Error(`table "${other[1]}" is not allowed (allowed: ${DB_TABLES.join(', ')})`);
-  const ctes = new Set([...s.matchAll(/(?:\bwith|,)\s+([a-z_][a-z0-9_]*)\s+as\s*\(/gi)].map(m => m[1].toLowerCase()));
-  for (const m of s.matchAll(/\b(?:from|join)\s+([a-z_][a-z0-9_]*)/gi)) {
-    const t = m[1].toLowerCase();
-    if (!DB_TABLES.includes(t) && !TABLE_FUNCS.has(t) && !ctes.has(t)) throw Error(`table "${m[1]}" is not allowed (allowed: ${DB_TABLES.join(', ')})`);
-  }
+  const bare = s.replace(/'(?:[^']|'')*'/g, "''");   // string literals blanked; everything below checks code only
+  if (bare.includes(';')) throw Error('only one statement is allowed');
+  if (/["`\[\]]|\/\*|--/.test(bare)) throw Error('quoted identifiers, brackets and comments are not allowed');
+  if (WRITE_WORDS.test(bare) || /\bpragma_\w+/i.test(bare)) throw Error('write, schema or pragma keywords are not allowed');
+  const ctes = [...bare.matchAll(/(?:\bwith|,)\s+([a-z_][a-z0-9_]*)\s*(?:\([^()]*\))?\s+as\s*\(/gi)];
+  const cteNames = new Set(ctes.map(m => m[1].toLowerCase()));
+  for (const m of ctes) if (new RegExp(`\\b${m[1]}\\b`, 'i').test(group(bare, m.index! + m[0].length - 1))) throw Error(`CTE "${m[1]}" refers to itself (recursion is not allowed)`);
+  const allowed = (t: string) => DB_TABLES.includes(t) || TABLE_FUNCS.has(t) || cteNames.has(t);
+  const flat = bare.replace(/\b(json_each|json_tree)\s*\([^()]*\)/gi, '$1');   // table functions -> their name
+  for (const m of flat.matchAll(new RegExp(String.raw`\bfrom\s+([^()]*?)${STOP}`, 'gi')))
+    for (const item of m[1].split(',')) { const t = item.trim().split(/\s+/)[0]?.toLowerCase(); if (t && !allowed(t)) throw Error(`table "${t}" is not allowed (allowed: ${DB_TABLES.join(', ')})`); }
+  for (const m of flat.matchAll(/\bjoin\s+([a-z_][a-z0-9_]*)/gi)) if (!allowed(m[1].toLowerCase())) throw Error(`table "${m[1]}" is not allowed (allowed: ${DB_TABLES.join(', ')})`);
+  if (/\bfrom\s+(?![a-z_(])/i.test(flat) || /\bjoin\s+(?![a-z_(])/i.test(flat)) throw Error('unsupported table reference');
   return `SELECT * FROM (${s}) LIMIT ${maxRows}`;
 }
 
@@ -41,9 +52,11 @@ export const safeDocKey = (key: string) => {
 
 export const CODE_REPO = 'timastras9/pump-research-desk';   // public; read without a token
 /** Branch and path for read_code, or throws. Only this one repo; no traversal. */
+// Fixed branches only: anyone can open a PR on a public repo, so PR refs could show attacker code as "ours" (audit F3).
+export const CODE_BRANCHES = ['main', 'worktree-deploy-10min-studies'];
 export function safeCodeRef(branch: unknown, path: unknown) {
   const b = String(branch ?? 'main').trim() || 'main', p = String(path ?? '').trim().replace(/^\/+/, '');
-  if (!/^[A-Za-z0-9._\/-]{1,100}$/.test(b) || b.includes('..')) throw Error('invalid branch name');
+  if (!CODE_BRANCHES.includes(b)) throw Error(`branch must be one of: ${CODE_BRANCHES.join(', ')}`);
   if (p && (!/^[A-Za-z0-9._\/ -]{1,300}$/.test(p) || p.includes('..'))) throw Error('invalid file path');
   return { branch: b, path: p };
 }
@@ -100,7 +113,13 @@ export const AGENT_RULES = `
 Tools (all read-only): search_data (study export), query_db (one SELECT), read_doc (rag/ files), read_code (the project's public repo).
 - Compute numbers with query_db instead of guessing; show the SQL you used for any number that matters.
 - In SQL select only the fields you need with json_extract(data,'$.field') and aggregate (COUNT, SUM, AVG, GROUP BY). Never SELECT the whole data column: it is huge and each result is cut at 6,000 characters.
-- Paper trade fields per token: $.paper.exitReason, $.paper.pnlPct, $.paper.pnlUsd, $.paper.status; study id is campaign_id; newest study = MAX(started_at).
+- Schema (go straight to the query; do not explore the schema):
+  study_campaigns(id, started_at ms, data): $.status, $.tokens, $.startedAt, $.paperResult.all.totalUsd, $.paperResult.filtered.totalUsd, $.paperMistakes
+  study_tokens(id, campaign_id, started_at ms, data): $.name, $.mint, $.excluded, $.metrics.changePct (final %), $.metrics.peakGainPct, $.metrics.peakAfterMs,
+    $.metrics.detectionDelayMs, $.paper.status, $.paper.exitReason, $.paper.skipReason, $.paper.pnlPct, $.paper.pnlUsd, $.paper.holdMs, $.paperMistake.label,
+    $.launch.feeRouted, $.launch.mayhem, $.candidate.marketCapUsd
+  model_runs(campaign_id, model_sha, created_at, summary JSON, review JSON); model_rows(campaign_id, model_sha, token_id, data JSON)
+  Outcome: winner = changePct > 7; tanked = changePct <= -50; loser = the rest; leave out excluded = 1. Newest study = MAX(started_at).
 - rag/index.json lists every study; rag/glossary.md explains every field.
 - You cannot change code, data or settings. Put proposed code in a markdown code block for Tim to apply.
 - Lead with the answer and the numbers. Short paragraphs or bullets.
