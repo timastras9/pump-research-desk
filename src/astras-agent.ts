@@ -39,6 +39,19 @@ export function groqModel(key: string, doFetch: typeof fetch = fetch): Model {
     return { text: replyText(j), toolCalls: toolCalls(j), ...usage(j?.usage) };
   } };
 }
+/** DeepSeek V4 Pro on Fireworks (OpenAI-compatible, native tools, 1M context). Price not published on the model page:
+ *  the cap uses a conservative $2 in / $8 out per 1M tokens. */
+export const FIREWORKS_MODEL = 'accounts/fireworks/models/deepseek-v4-pro';
+export function fireworksModel(key: string, doFetch: typeof fetch = fetch): Model {
+  return { name: 'fireworks/deepseek-v4-pro', inPerM: 2, outPerM: 8, capUsd: 2, async call(messages, maxOut, useTools = true) {
+    const r = await doFetch('https://api.fireworks.ai/inference/v1/chat/completions', { method: 'POST',
+      headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({ model: FIREWORKS_MODEL, messages, ...(useTools ? { tools: TOOLS } : {}), max_tokens: maxOut }) });
+    const j = await r.json() as any;
+    if (!r.ok) throw Error(`Fireworks ${r.status}: ${j?.error?.message ?? j?.message ?? 'request failed'}`);
+    return { text: replyText(j), toolCalls: toolCalls(j), ...usage(j?.usage) };
+  } };
+}
 /** Same model on Workers AI (fallback when no Groq key): $0.35 in / $0.75 out per 1M tokens. */
 export function workersAiModel(ai: Pick<Ai, 'run'>): Model {
   return { name: '@cf/openai/gpt-oss-120b', inPerM: 0.35, outPerM: 0.75, async call(messages, maxOut, useTools = true) {

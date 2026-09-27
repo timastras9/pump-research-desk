@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { safeSelect, safeDocKey, safeCodeRef, runTool, agentTurn, groqModel, workersAiModel, withFallback, astraModel, buildHistory, PROMPT_VERSION, TOOLS, AGENT_CAP_USD } from '../src/astras-agent';
+import { safeSelect, safeDocKey, safeCodeRef, runTool, agentTurn, groqModel, workersAiModel, withFallback, astraModel, fireworksModel, buildHistory, PROMPT_VERSION, TOOLS, AGENT_CAP_USD } from '../src/astras-agent';
 
 test('query_db guard: one read-only SELECT over the 5 study tables, row cap added', () => {
   assert.equal(safeSelect("SELECT json_extract(data,'$.name') FROM study_tokens WHERE campaign_id='x';"), "SELECT * FROM (SELECT json_extract(data,'$.name') FROM study_tokens WHERE campaign_id='x') LIMIT 200");
@@ -111,6 +111,21 @@ test('memory: an old answer is fenced as unverified user context with every numb
   await agentTurn(e as any, old, 'same question again');
   assert.ok(!sent.some((m: any) => m.role === 'assistant'), 'old answers are never replayed as assistant turns');
   assert.equal(typeof PROMPT_VERSION, 'string'); assert.equal(PROMPT_VERSION.length, 8);
+});
+
+test('fireworks deepseek: right endpoint and model, native tools, key only in the header, errors surfaced', async () => {
+  const seen: any[] = [];
+  const replies = [{ choices: [{ message: { content: null, tool_calls: [{ id: 'f1', type: 'function', function: { name: 'read_doc', arguments: '{"key":"rag/index.json"}' } }] } }], usage: { prompt_tokens: 1000, completion_tokens: 50 } },
+    { choices: [{ message: { content: 'No studies yet.' } }], usage: { prompt_tokens: 1200, completion_tokens: 10 } }];
+  const fake = (async (url: string, init: any) => { seen.push({ url, body: JSON.parse(init.body), auth: init.headers.Authorization }); return { ok: true, status: 200, json: async () => replies.shift() }; }) as any;
+  const r = await agentTurn(env() as any, [], 'How many studies?', fireworksModel('fw_test', fake));
+  assert.equal(r.answer, 'No studies yet.'); assert.equal(r.model, 'fireworks/deepseek-v4-pro'); assert.deepEqual(r.tools.map(t => t.name), ['read_doc']);
+  assert.equal(seen[0].url, 'https://api.fireworks.ai/inference/v1/chat/completions');
+  assert.equal(seen[0].body.model, 'accounts/fireworks/models/deepseek-v4-pro'); assert.equal(seen[0].auth, 'Bearer fw_test');
+  assert.ok(Array.isArray(seen[0].body.tools)); assert.equal(seen[1].body.messages.at(-1).role, 'tool');
+  assert.ok(!JSON.stringify(seen.map(s => s.body)).includes('fw_test'), 'key never in the request body');
+  const bad = (async () => ({ ok: false, status: 401, json: async () => ({ error: { message: 'unauthorized' } }) })) as any;
+  assert.match((await agentTurn(env() as any, [], 'q', fireworksModel('x', bad))).error!, /Fireworks 401: unauthorized/);
 });
 
 test('astra adapter: no native tools param, tool calls as JSON lines, results fed back as messages, $0.50 cap', async () => {

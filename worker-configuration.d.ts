@@ -11,6 +11,7 @@ interface __BaseEnv_Env {
 	AI_SEARCH_INSTANCE: "crypto-study-media";
 	DASHBOARD_PASSWORD: string;
 	GROQ_API_KEY?: string;
+	FIREWORKS_API_KEY?: string;
 	DESK: DurableObjectNamespace<import("./src/worker").ResearchDesk>;
 	STUDIES: DurableObjectNamespace<import("./src/worker").StudyCoordinator>;
 	RECORDERS: DurableObjectNamespace<import("./src/worker").StudyRecorder>;
