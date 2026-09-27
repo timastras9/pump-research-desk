@@ -13,6 +13,15 @@ export function ragStatusText(d){
  const idx=d?.index?`Export: ${n} of ${all} studies, updated ${new Date(d.index.updatedAt).toLocaleString()}.`:`Export: not written yet (${all} studies in the database). Press Re-sync.`;
  return idx+' '+(d?.aiSearchInstance?`Document search: AI Search instance "${d.aiSearchInstance}".`:'Document search: not connected yet (set AI_SEARCH_INSTANCE); Astra answers from the study index only.');
 }
+// DeepSeek backtest panel: progress, then buy-everything vs DeepSeek buys vs what it skipped (same tokens).
+export function dsHtml(s){
+ if(!s||s.status==='not started')return '<p class="muted">Not run yet.</p>';
+ const pct=v=>v==null?'—':(v>0?'+':'')+v+'%',row=(name,x)=>`<tr><td>${esc(name)}</td><td>${esc(x?.n??0)}</td><td>${pct(x?.avgPct)}${x?.ci95!=null?` ±${esc(x.ci95)}`:''}</td><td>${x?.winPct==null?'—':esc(x.winPct)+'%'}</td><td>${x?.usd==null?'—':(x.usd>=0?'+$':'-$')+Math.abs(x.usd).toFixed(2)}</td></tr>`;
+ const sm=s.summary||{},lat=sm.latencyMs;
+ return `<p>${esc(s.status)} · ${esc(s.done)}/${esc(s.total)} tokens · DeepSeek said BUY on ${esc(sm.buys??0)}${lat?` · answer time median ${(lat.median/1000).toFixed(2)} s, p90 ${(lat.p90/1000).toFixed(2)} s`:''}</p>
+<div class="table-scroll"><table><thead><tr><th>Strategy (same tokens)</th><th>Trades</th><th>Avg per trade (95% CI)</th><th>Won</th><th>Total ($2)</th></tr></thead><tbody>${row('Buy everything at 30 s',sm.buyEverything)}${row('DeepSeek BUY picks (after its answer time)',sm.deepseekBuys)}${row('Tokens DeepSeek skipped',sm.deepseekSkips)}</tbody></table></div>
+${(s.errors||[]).length?`<p class="error small">${s.errors.map(esc).join('<br>')}</p>`:''}`;
+}
 // One Astras agent session per conversation (its memory lives in a Durable Object on the server).
 export const newSessionId=()=>(globalThis.crypto?.randomUUID?.()??(Date.now().toString(36)+Math.random().toString(36).slice(2))).toLowerCase();
 if(typeof document!=='undefined'){
@@ -37,4 +46,8 @@ if(typeof document!=='undefined'){
   try{for(const s of studies){$('rag-status').textContent=`Exporting study ${done+1} of ${studies.length}…`;await api('/api/rag/sync',{id:s.id});done++;}await status();}
   catch(e){$('rag-status').textContent=`Stopped after ${done} studies: ${e.message}`;}finally{$('sync').disabled=false;}};
  status().catch(e=>{$('rag-status').textContent=e.message;});
+ let dsTimer=null;
+ async function dsStatus(){const s=await api('/api/deepseek/status');$('ds-status').innerHTML=dsHtml(s);clearTimeout(dsTimer);if(s.status==='running')dsTimer=setTimeout(()=>dsStatus().catch(()=>{}),4000);}
+ $('ds-run').onclick=async()=>{$('ds-run').disabled=true;try{await api('/api/deepseek/run',{});await dsStatus();}catch(e){$('ds-status').textContent=e.message;}finally{$('ds-run').disabled=false;}};
+ dsStatus().catch(e=>{$('ds-status').textContent=e.message;});
 }

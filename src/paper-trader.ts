@@ -39,7 +39,13 @@ export function paperTrade(samples:Sample[],opts:{skip?:string|null;stillRecordi
   const i=v.findIndex(s=>s.priceUsd!==first.priceUsd);
   if(i<0||v[i].time-first.time>R.deadAfterMs)return opts.stillRecording&&v.at(-1)!.time-first.time<=R.deadAfterMs?{...base,status:'open',skipReason:'waiting for first trade'}:{...base,status:'skipped',skipReason:`dead: no trade within ${R.deadAfterMs/1000}s`};
   if(v[i].priceUsd>=first.priceUsd*(1+R.noChaseAbovePct/100))return {...base,status:'skipped',skipReason:'already pumped: no chase'};
-  const e=v[i+1];if(!e)return {...base,status:'open',skipReason:'entry pending'};
+  if(!v[i+1])return {...base,status:'open',skipReason:'entry pending'};
+  return tradeFrom(v,i+1,R,opts.stillRecording);
+}
+/** Rules-v3 exits for a position entered at v[entryIdx] (v = valid prices, time-sorted). Used by paperTrade and by any
+ *  other entry signal (e.g. the DeepSeek backtest) so every strategy is scored with the same exits and costs. */
+export function tradeFrom(v:{time:number;priceUsd:number}[],entryIdx:number,R:PaperRules=PAPER_RULES,stillRecording=false):PaperTrade{
+  const base={version:R.version},i=entryIdx-1,e=v[entryIdx];
   let trade:PaperTrade={...base,status:'open',entryAt:e.time,entryPrice:e.priceUsd};
   let high=e.priceUsd,checked=false;
   const fill=(j:number)=>v[Math.min(j+1,v.length-1)];
@@ -56,7 +62,7 @@ export function paperTrade(samples:Sample[],opts:{skip?:string|null;stillRecordi
     if(high>=e.priceUsd*(1+R.trailArmPct/100)&&s.priceUsd<=high*(1-trail/100))return close(R,trade,e,fill(j),`trailing stop -${trail}% from high`,high);
     if(el>=R.maxHoldMs)return close(R,trade,e,fill(j),`${R.maxHoldMs/60000}-min time exit`,high);
   }
-  return close(R,trade,e,v.at(-1)!,opts.stillRecording?'open (marked to market)':'recording ended',high,opts.stillRecording?'open':'closed');
+  return close(R,trade,e,v.at(-1)!,stillRecording?'open (marked to market)':'recording ended',high,stillRecording?'open':'closed');
 }
 const median=(a:number[])=>{const s=[...a].sort((x,y)=>x-y);return s.length?(s[Math.floor((s.length-1)/2)]+s[Math.floor(s.length/2)])/2:null;};
 // Scorecard over many tokens; tags split results by launch traits so we learn which filters help.

@@ -256,6 +256,9 @@ async function route(request: Request, env: Env): Promise<Response> {
       await logChat(env.CRYPTO_STUDY, input.question.trim(), result).catch(() => {});   // Astra history (astra_log)
       return json(result);
     }
+    // DeepSeek screening backtest on the recorded studies (runs in a Durable Object; results in D1 deepseek_bt).
+    if (path === '/api/deepseek/run' && request.method === 'POST') return json(await env.ASTRAS.getByName('deepseek-backtest').startBacktest());
+    if (path === '/api/deepseek/status' && request.method === 'GET') return json(await env.ASTRAS.getByName('deepseek-backtest').backtestStatus());
     if (path === '/api/rag/studies' && request.method === 'GET') {
       const rows = (await env.CRYPTO_STUDY.prepare('SELECT id, started_at FROM study_campaigns ORDER BY started_at DESC').all<{ id: string; started_at: number }>()).results;
       const idx = await env.CRYPTO_MEDIA.get('rag/index.json');
