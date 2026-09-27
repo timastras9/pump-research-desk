@@ -326,6 +326,9 @@ async function route(request: Request, env: Env): Promise<Response> {
 async function deepseekSelfTest(env: Env) {
   const db = env.CRYPTO_STUDY;
   const bt = await db.prepare("SELECT id FROM model_selftest WHERE status='pending-backtest' ORDER BY id LIMIT 1").first<{ id: number }>().catch(() => null);
+  const ct = await db.prepare("SELECT id FROM model_selftest WHERE status='pending-chat' ORDER BY id LIMIT 1").first<{ id: number }>().catch(() => null);
+  if (ct) { const r = await env.ASTRAS.getByName(`selftest-chat-${ct.id}`).chat('How many studies are there, and how many closed paper trades in total? Use query_db and show the SQL.');
+    await db.prepare("UPDATE model_selftest SET status='done', at=?, result=? WHERE id=?").bind(Date.now(), JSON.stringify({ model: r.model, tools: r.tools, answer: r.answer?.slice(0, 600), error: r.error, usd: r.actualUsd }), ct.id).run(); return; }
   if (bt) { const r = await env.ASTRAS.getByName('deepseek-backtest').startBacktest(); await db.prepare("UPDATE model_selftest SET status='done', at=?, result=? WHERE id=?").bind(Date.now(), JSON.stringify(r), bt.id).run(); return; }
   const row = await db.prepare("SELECT id FROM model_selftest WHERE status='pending' ORDER BY id LIMIT 1").first<{ id: number }>().catch(() => null);
   if (!row) return;
